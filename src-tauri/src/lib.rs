@@ -4740,7 +4740,7 @@ pub fn run() {
             commands::get_profile_stats
         ])
         .run(tauri::generate_context!())
-        .expect("error while running Claude Multiprofile");
+        .expect("error while running Claudius");
 }
 
 #[cfg(test)]

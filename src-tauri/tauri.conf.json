@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Claude Multiprofile",
-  "version": "0.1.10",
+  "productName": "Claudius",
+  "version": "0.1.11",
   "identifier": "com.claude-multiprofile.manager",
   "build": {
     "beforeDevCommand": "npm --prefix frontend run dev",
@@ -13,7 +13,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "Claude Multiprofile",
+        "title": "Claudius",
         "width": 1100,
         "height": 760,
         "minWidth": 920,

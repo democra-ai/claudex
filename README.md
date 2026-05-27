@@ -1,12 +1,20 @@
-# claude-multiprofile
+<p align="center">
+  <img src="docs/assets/logo.svg" alt="Claudius logo" width="120">
+</p>
 
-Run multiple Claude Desktop and Claude Code accounts side by side on macOS, fully isolated. Each profile keeps its own login, chats, settings, MCP connectors, plugins, and skills — switch between personal, work, and client accounts without signing out.
+<h1 align="center">Claudius</h1>
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Release](https://img.shields.io/github/v/release/democra-ai/claude-multiprofile?label=release)](https://github.com/democra-ai/claude-multiprofile/releases)
-[![Platform](https://img.shields.io/badge/platform-macOS-lightgrey)](https://www.apple.com/macos/)
-[![Node](https://img.shields.io/badge/node-%3E%3D18-brightgreen)](https://nodejs.org/)
-[![Tauri](https://img.shields.io/badge/built%20with-Tauri%202-24C8DB.svg)](https://v2.tauri.app/)
+<p align="center">
+  Run multiple Claude Desktop and Claude Code accounts side by side on macOS, fully isolated. Each profile keeps its own login, chats, settings, MCP connectors, plugins, and skills — switch between personal, work, and client accounts without signing out.
+</p>
+
+<p align="center">
+  <a href="https://opensource.org/licenses/MIT"><img alt="License: MIT" src="https://img.shields.io/badge/License-MIT-yellow.svg"></a>
+  <a href="https://github.com/democra-ai/claudius/releases"><img alt="Release" src="https://img.shields.io/github/v/release/democra-ai/claudius?label=release"></a>
+  <a href="https://www.apple.com/macos/"><img alt="Platform" src="https://img.shields.io/badge/platform-macOS-lightgrey"></a>
+  <a href="https://nodejs.org/"><img alt="Node" src="https://img.shields.io/badge/node-%3E%3D18-brightgreen"></a>
+  <a href="https://v2.tauri.app/"><img alt="Tauri" src="https://img.shields.io/badge/built%20with-Tauri%202-24C8DB.svg"></a>
+</p>
 
 <p align="center">
   <img src="docs/assets/hero-grid.svg" alt="Animated demo of the content library matrix: profiles as columns, items as rows, glyphs encoding share state. Cells animate to show toggling between absent, independent, and shared states." width="880">
@@ -46,12 +54,12 @@ Click a profile name in the sidebar to slide this in. Numbers are mocked but the
 
 ### macOS app (recommended)
 
-Grab the latest `.dmg` from the **[Releases page](https://github.com/democra-ai/claude-multiprofile/releases/latest)**, double-click to mount, drag **Claude Multiprofile.app** into `/Applications`.
+Grab the latest `.dmg` from the **[Releases page](https://github.com/democra-ai/claudius/releases/latest)**, double-click to mount, drag **Claudius.app** into `/Applications`.
 
 The bundle is unsigned, so on first launch macOS Gatekeeper will warn — right-click the app and pick **Open**, or run:
 
 ```bash
-xattr -dr com.apple.quarantine "/Applications/Claude Multiprofile.app"
+xattr -dr com.apple.quarantine "/Applications/Claudius.app"
 ```
 
 ### CLI
@@ -59,7 +67,7 @@ xattr -dr com.apple.quarantine "/Applications/Claude Multiprofile.app"
 The Node CLI is published from this repo (not yet on npm):
 
 ```bash
-npm install -g github:democra-ai/claude-multiprofile
+npm install -g github:democra-ai/claudius
 ```
 
 Requires Node 18 or newer. The CLI works on both macOS and Linux (the Code half) — the Desktop half is macOS-only because Claude Desktop is macOS-only.
@@ -67,8 +75,8 @@ Requires Node 18 or newer. The CLI works on both macOS and Linux (the Code half)
 ### Build from source
 
 ```bash
-git clone https://github.com/democra-ai/claude-multiprofile
-cd claude-multiprofile
+git clone https://github.com/democra-ai/claudius
+cd claudius
 npm install                 # root Tauri CLI
 npm run frontend:install    # React deps
 npm run tauri:dev           # opens the GUI with hot reload
@@ -81,7 +89,7 @@ Requirements: Rust toolchain (`rustup`), Xcode Command Line Tools, Node 18+.
 
 ### GUI path
 
-1. Open **Claude Multiprofile.app**.
+1. Open **Claudius.app**.
 2. Sidebar bottom → **NEW PROFILE** → type a name like `work` → check ☑ Desktop launcher and ☑ Code CLI alias → click `+`.
 3. A new `Claude WORK.app` lands on `~/Applications/`. Drag it to the Dock.
 4. `source ~/.zshrc` (or open a new terminal tab) — the `claude-work` alias is live for Claude Code.
@@ -294,7 +302,7 @@ The Code half works fine on Linux, the Desktop half doesn't (Claude Desktop is m
 
 | Tool | Desktop | Code | GUI | Mac | Linux | Notes |
 |------|---------|------|-----|-----|-------|-------|
-| **claude-multiprofile** (this) | yes | yes | **yes** | yes | partial | Single tool, content matrix GUI, optional CLI |
+| **Claudius** (this) | yes | yes | **yes** | yes | partial | Single tool, content matrix GUI, optional CLI |
 | [aimux](https://github.com/Digital-Threads/aimux) | no | yes | no | yes | yes | Code only, also handles symlink-sharing |
 | [aisw](https://crates.io/crates/aisw) | no | yes | no | yes | yes | Rust binary, covers Codex CLI and Gemini CLI |
 | [Jean-Claude](https://madewithlove.com/blog/running-multiple-claude-accounts-without-logging-out/) | no | yes | no | yes | yes | Cross-machine sync, opinionated dotfiles |
@@ -342,8 +350,8 @@ The single runtime npm dependency for the CLI is `@inquirer/prompts`. The Tauri 
 Issues and PRs welcome. The codebase is structured for newcomers — the CLI is one file per command in `src/commands/`, the Tauri backend lives in `src-tauri/src/lib.rs`, and the React UI is broken into small focused components under `frontend/src/components/`.
 
 ```bash
-git clone https://github.com/democra-ai/claude-multiprofile
-cd claude-multiprofile
+git clone https://github.com/democra-ai/claudius
+cd claudius
 npm install
 npm test                       # CLI unit tests
 cd src-tauri && cargo test     # Rust unit tests

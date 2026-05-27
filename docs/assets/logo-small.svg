@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" role="img" aria-label="Claudius compact mark: three stacked rounded copper squares.">
+  <title>Claudius</title>
+  <!-- Back card (faintest) -->
+  <rect x="3" y="3" width="22" height="22" rx="6" fill="#c96442" fill-opacity="0.30"/>
+  <!-- Middle card -->
+  <rect x="5.5" y="5.5" width="22" height="22" rx="6" fill="#c96442" fill-opacity="0.62"/>
+  <!-- Front card (no C at 32px — too small to read, the stack carries it) -->
+  <rect x="8" y="8" width="22" height="22" rx="6" fill="#c96442"/>
+</svg>
