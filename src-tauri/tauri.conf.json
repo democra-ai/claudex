@@ -21,7 +21,7 @@
         "hiddenTitle": true,
         "titleBarStyle": "Overlay",
         "transparent": true,
-        "trafficLightPosition": { "x": 18, "y": 16 }
+        "trafficLightPosition": { "x": 17, "y": 17 }
       }
     ],
     "withGlobalTauri": true,
