@@ -19,9 +19,7 @@
         "minWidth": 920,
         "minHeight": 640,
         "hiddenTitle": true,
-        "titleBarStyle": "Overlay",
-        "transparent": true,
-        "trafficLightPosition": { "x": 17, "y": 17 }
+        "titleBarStyle": "Overlay"
       }
     ],
     "withGlobalTauri": true,

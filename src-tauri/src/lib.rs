@@ -4682,6 +4682,30 @@ mod commands {
 
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_decorum::init())
+        .setup(|app| {
+            // The canonical Tauri 2 way to get a single-row overlay title
+            // bar with traffic lights inset to match a custom toolbar.
+            // tauri-plugin-decorum wraps the NSWindow calls + transparency
+            // setup that would otherwise be hand-rolled per-app.
+            //
+            // Equivalent formula derived from Claude.app's compiled config:
+            //   inset_y = (toolbar_height_px - light_height_px) / 2
+            //           = (45 - 12) / 2 = 16.5 → 17
+            // The plugin's set_traffic_lights_inset takes (x, y) in points;
+            // we use the same value for both to get a symmetric inset.
+            use tauri::Manager;
+            use tauri_plugin_decorum::WebviewWindowExt;
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.create_overlay_titlebar();
+                #[cfg(target_os = "macos")]
+                {
+                    let _ = window.set_traffic_lights_inset(17.0, 17.0);
+                    let _ = window.make_transparent();
+                }
+            }
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             commands::list_desktop_installs,
             commands::create_desktop_profile,
