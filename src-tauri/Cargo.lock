@@ -325,6 +325,7 @@ dependencies = [
 name = "claude_multiprofile_app"
 version = "0.1.9"
 dependencies = [
+ "base64 0.22.1",
  "chrono",
  "serde",
  "serde_json",

@@ -260,6 +260,17 @@ export type LibraryKind =
 // Profile stats — codexbar-style status panel
 // -----------------------------
 
+export type ProfileIdentity = {
+  account_id: string;
+  /** True for the account that owns this Desktop profile (from
+   *  cowork-enabled-cli-ops.json). */
+  is_owner: boolean;
+  account_name: string | null;
+  email_address: string | null;
+  agent_session_count: number;
+  last_activity_ms: number | null;
+};
+
 export type ProfileStats = {
   install_id: string;
   install_name: string;
@@ -267,11 +278,19 @@ export type ProfileStats = {
   data_dir: string;
   account_id: string | null;
   org_id: string | null;
-  /** Display name from any Cowork agent-mode session file. */
-  account_name: string | null;
-  /** Email — same source. Profiles that haven't used Cowork yet won't have it. */
-  email_address: string | null;
+  /** All identities (Anthropic accounts) present in this profile. Owner
+   *  first, then co-users by recency. */
+  identities: ProfileIdentity[];
+  /** Tokens consumed today across all accounts in this Desktop instance.
+   *  Source: buddy-tokens.json. Resets daily by Claude Desktop. */
+  tokens_today: number;
+  tokens_today_date: string | null;
+  /** Device id from ant-did, base64-decoded. Useful to spot machine drift. */
+  device_id: string | null;
+  ssh_remote_count: number;
   disk_bytes: number | null;
+  code_panel_bytes: number | null;
+  cowork_agent_bytes: number | null;
   created_at_ms: number | null;
   last_activity_ms: number | null;
   code_session_count: number;

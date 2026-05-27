@@ -3657,6 +3657,24 @@ fn humanize_ago(ms: i64) -> String {
 
 // ----- Profile detail (codexbar-style stat panel) -----
 
+/// One identity (Anthropic account) seen in this profile. A profile can
+/// host the *owner* (whoever's logged in to Claude Desktop) plus zero or
+/// more *co-users* who used Cowork agent mode under their own login.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ProfileIdentity {
+    pub account_id: String,
+    /// True iff this matches `cowork-enabled-cli-ops.json`'s ownerAccountId.
+    pub is_owner: bool,
+    /// Display name surfaced from any agent-mode session for this account.
+    pub account_name: Option<String>,
+    /// Email — same source.
+    pub email_address: Option<String>,
+    /// Cowork agent-mode sessions belonging to this account in this profile.
+    pub agent_session_count: u32,
+    /// Most-recent activity timestamp across this identity's sessions.
+    pub last_activity_ms: Option<i64>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ProfileStats {
     pub install_id: String,
@@ -3665,14 +3683,25 @@ pub struct ProfileStats {
     pub data_dir: String,
     pub account_id: Option<String>,
     pub org_id: Option<String>,
-    /// Human-readable display name surfaced from any Cowork agent-mode
-    /// session file (the only on-disk source that carries it). None if
-    /// the user has never used Cowork agent mode in this profile.
-    pub account_name: Option<String>,
-    /// Email address — same source as account_name.
-    pub email_address: Option<String>,
+    /// All identities (accounts) that have left a footprint in this profile.
+    /// The owner appears first; co-users follow sorted by recency.
+    pub identities: Vec<ProfileIdentity>,
+    /// Tokens consumed today across all accounts in this Desktop instance,
+    /// from `buddy-tokens.json`. Reset daily by Claude Desktop.
+    pub tokens_today: u64,
+    /// "YYYY-MM-DD" the tokens_today count is for. If stale (not today),
+    /// the count is from a previous day and Desktop hasn't reset yet.
+    pub tokens_today_date: Option<String>,
+    /// Device identifier from `ant-did` (base64-decoded UUID). Useful to
+    /// spot when two profiles think they're on different machines.
+    pub device_id: Option<String>,
+    /// SSH remote configs (from `ssh_configs.json` → `configs`).
+    pub ssh_remote_count: u32,
     /// Bytes-on-disk of the data directory. Computed via `du -sk` (fast).
     pub disk_bytes: Option<u64>,
+    /// Sub-totals so the user sees where the Big GBs are.
+    pub code_panel_bytes: Option<u64>,
+    pub cowork_agent_bytes: Option<u64>,
     /// Unix millis — when the data dir was first created (mtime of the dir).
     pub created_at_ms: Option<i64>,
     /// Unix millis — last write activity anywhere in the dir.
@@ -3694,6 +3723,142 @@ pub struct ProfileStats {
     pub link_group: Option<String>,
     /// install_ids of other profiles that share this workspace.
     pub shared_with: Vec<String>,
+}
+
+/// Read tokens-today count from buddy-tokens.json. Missing file → (0, None).
+fn read_tokens_today(data_dir: &Path) -> (u64, Option<String>) {
+    let path = data_dir.join("buddy-tokens.json");
+    let Ok(raw) = fs::read_to_string(&path) else { return (0, None) };
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(&raw) else {
+        return (0, None);
+    };
+    let today = v.get("tokens-today");
+    let count = today
+        .and_then(|t| t.get("tokens"))
+        .and_then(|n| n.as_u64())
+        .unwrap_or(0);
+    let date = today
+        .and_then(|t| t.get("date"))
+        .and_then(|s| s.as_str())
+        .map(String::from);
+    (count, date)
+}
+
+/// Decode the base64 device id from `ant-did`. The file contains a single
+/// base64-encoded UUID string. Missing/invalid → None.
+fn read_device_id(data_dir: &Path) -> Option<String> {
+    use base64::Engine;
+    let raw = fs::read_to_string(data_dir.join("ant-did")).ok()?;
+    let trimmed = raw.trim();
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(trimmed)
+        .ok()?;
+    let s = String::from_utf8(bytes).ok()?;
+    let s = s.trim().to_string();
+    if s.is_empty() { None } else { Some(s) }
+}
+
+fn read_ssh_remote_count(data_dir: &Path) -> u32 {
+    let path = data_dir.join("ssh_configs.json");
+    let Ok(raw) = fs::read_to_string(&path) else { return 0 };
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(&raw) else {
+        return 0;
+    };
+    v.get("configs")
+        .and_then(|c| c.as_array())
+        .map(|a| a.len() as u32)
+        .unwrap_or(0)
+}
+
+/// Walk `local-agent-mode-sessions/` and group sessions by their owning
+/// accountId (the directory two levels above each session JSON). Each
+/// subdir at depth 1 *is* an accountId; the dir at depth 2 is per-org.
+fn scan_identities(data_dir: &Path, owner_account: Option<&str>) -> Vec<ProfileIdentity> {
+    let root = cowork_sessions_root(data_dir);
+    let mut by_account: BTreeMap<String, (Vec<LocalSession>, ())> = BTreeMap::new();
+    if let Ok(outer) = fs::read_dir(&root) {
+        for entry in outer.flatten() {
+            let outer_path = entry.path();
+            if !outer_path.is_dir() {
+                continue;
+            }
+            let acct = match outer_path.file_name().and_then(|n| n.to_str()) {
+                Some("skills-plugin") | None => continue,
+                Some(s) => s.to_string(),
+            };
+            // Scan deeper for sessions belonging to this account.
+            let mut sessions: Vec<LocalSession> = Vec::new();
+            if let Ok(inner) = fs::read_dir(&outer_path) {
+                for inner_e in inner.flatten() {
+                    let p = inner_e.path();
+                    if !p.is_dir() {
+                        continue;
+                    }
+                    if let Ok(leaf) = fs::read_dir(&p) {
+                        for f in leaf.flatten() {
+                            let fp = f.path();
+                            if fp.file_name()
+                                .and_then(|n| n.to_str())
+                                .map(|s| s.starts_with("local_") && s.ends_with(".json"))
+                                .unwrap_or(false)
+                            {
+                                if let Some(s) = parse_local_session(&fp) {
+                                    sessions.push(s);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            by_account
+                .entry(acct)
+                .or_insert((Vec::new(), ()))
+                .0
+                .extend(sessions);
+        }
+    }
+
+    // Build ProfileIdentity entries. Owner first, then by recency.
+    let mut identities: Vec<ProfileIdentity> = by_account
+        .into_iter()
+        .map(|(account_id, (sessions, _))| {
+            let is_owner = owner_account == Some(account_id.as_str());
+            let mut sorted = sessions;
+            sorted.sort_by_key(|s| -s.last_activity_ms);
+            let latest = sorted.first();
+            ProfileIdentity {
+                is_owner,
+                account_name: latest.and_then(|s| s.account_name.clone()),
+                email_address: latest.and_then(|s| s.email_address.clone()),
+                last_activity_ms: latest.map(|s| s.last_activity_ms),
+                agent_session_count: sorted.len() as u32,
+                account_id,
+            }
+        })
+        .collect();
+
+    // If the owner has no agent-mode sessions, still surface them as an
+    // identity with empty fields — they're the profile's primary account
+    // and the UI needs to render them somewhere.
+    if let Some(owner) = owner_account {
+        if !identities.iter().any(|i| i.account_id == owner) {
+            identities.push(ProfileIdentity {
+                account_id: owner.to_string(),
+                is_owner: true,
+                account_name: None,
+                email_address: None,
+                agent_session_count: 0,
+                last_activity_ms: None,
+            });
+        }
+    }
+
+    identities.sort_by(|a, b| {
+        b.is_owner
+            .cmp(&a.is_owner)
+            .then_with(|| b.last_activity_ms.cmp(&a.last_activity_ms))
+    });
+    identities
 }
 
 fn dir_disk_bytes(path: &Path) -> Option<u64> {
@@ -3737,22 +3902,14 @@ pub fn get_profile_stats(install_id: String) -> Result<ProfileStats, String> {
     )
     .unwrap_or_default();
 
-    // Cowork agent-mode sessions — the only on-disk source for the user's
-    // display name and email. We scan all sessions and pick the most
-    // recently-active one's identity (most likely to reflect the live login).
-    let cowork_sessions = scan_sessions_under(&cowork_sessions_root(&data_dir));
-    let mut cowork_sorted = cowork_sessions.clone();
-    cowork_sorted.sort_by_key(|s| -s.last_activity_ms);
-    let (account_name, email_address) = cowork_sorted
-        .iter()
-        .find_map(|s| {
-            if s.account_name.is_some() || s.email_address.is_some() {
-                Some((s.account_name.clone(), s.email_address.clone()))
-            } else {
-                None
-            }
-        })
-        .unwrap_or((None, None));
+    // Per-identity breakdown: owner from cowork-enabled-cli-ops.json,
+    // co-users from any other accountId subdir present on disk. Each is
+    // tagged with name/email pulled from their most-recent session file.
+    let identities = scan_identities(&data_dir, account_id.as_deref());
+
+    // Aggregate counts across all identities for the "total Cowork sessions"
+    // headline.
+    let cowork_sessions_total: u32 = identities.iter().map(|i| i.agent_session_count).sum();
 
     let extensions = list_extensions_in_dir(&data_dir).unwrap_or_default();
     let config = read_desktop_config(&data_dir).unwrap_or(serde_json::json!({}));
@@ -3796,6 +3953,11 @@ pub fn get_profile_stats(install_id: String) -> Result<ProfileStats, String> {
         }
     }
 
+    let (tokens_today, tokens_today_date) = read_tokens_today(&data_dir);
+    let device_id = read_device_id(&data_dir);
+    let ssh_remote_count = read_ssh_remote_count(&data_dir);
+    let cowork_agent_bytes = dir_disk_bytes(&cowork_sessions_root(&data_dir));
+
     Ok(ProfileStats {
         install_id: install.id,
         install_name: install.name,
@@ -3803,9 +3965,14 @@ pub fn get_profile_stats(install_id: String) -> Result<ProfileStats, String> {
         data_dir: install.data_dir.clone(),
         account_id,
         org_id,
-        account_name,
-        email_address,
+        identities,
+        tokens_today,
+        tokens_today_date,
+        device_id,
+        ssh_remote_count,
         disk_bytes: dir_disk_bytes(&data_dir),
+        code_panel_bytes: dir_disk_bytes(&desktop_code_sessions_path(&data_dir)),
+        cowork_agent_bytes,
         created_at_ms: dir_created_ms(&data_dir),
         last_activity_ms: if stat.last_activity_ms > 0 {
             Some(stat.last_activity_ms)
@@ -3815,7 +3982,7 @@ pub fn get_profile_stats(install_id: String) -> Result<ProfileStats, String> {
         code_session_count: stat.session_count,
         code_total_bytes: stat.total_bytes,
         code_recent_cwds: stat.recent_cwds,
-        cowork_session_count: cowork_sessions.len() as u32,
+        cowork_session_count: cowork_sessions_total,
         extension_count: extensions.len() as u32,
         mcp_server_count: mcp_count as u32,
         cowork_skill_count: cowork_skills as u32,
