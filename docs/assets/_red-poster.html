@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>Claudies — 小红书海报</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,wght@0,300..900;1,300..900&family=Geist:wght@100..900&family=JetBrains+Mono:wght@100..800&display=swap" rel="stylesheet">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { background: #f5f4ee; }
+  body {
+    width: 1080px; height: 1440px;
+    font-family: 'Geist', -apple-system, "PingFang SC", "Hiragino Sans GB", system-ui;
+    color: #3d3929;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: geometricPrecision;
+    overflow: hidden;
+    position: relative;
+  }
+
+  /* Warm radial wash + subtle copper specks */
+  body::before {
+    content: '';
+    position: absolute; inset: 0;
+    background:
+      radial-gradient(circle at 22% 28%, rgba(201,100,66,0.07) 0, transparent 45%),
+      radial-gradient(circle at 78% 72%, rgba(201,100,66,0.05) 0, transparent 45%);
+    pointer-events: none;
+  }
+
+  /* Two ghosted card silhouettes in the background — visual echo of the
+     stacked logo, the "multiple Claudes" idea told in negative space. */
+  .ghost {
+    position: absolute;
+    width: 360px; height: 360px;
+    border-radius: 72px;
+    background: #c96442;
+    pointer-events: none;
+  }
+  .ghost.one {
+    top: -110px; right: -120px;
+    opacity: 0.06;
+    transform: rotate(8deg);
+  }
+  .ghost.two {
+    bottom: -90px; left: -110px;
+    opacity: 0.05;
+    transform: rotate(-12deg);
+  }
+
+  .frame {
+    position: relative;
+    z-index: 1;
+    height: 100%;
+    display: flex; flex-direction: column;
+    align-items: center;
+    padding: 160px 80px 100px;
+  }
+
+  .logo {
+    width: 280px; height: 280px;
+    margin-bottom: 70px;
+    filter: drop-shadow(0 24px 48px rgba(61,57,41,0.18))
+            drop-shadow(0 4px 12px rgba(61,57,41,0.08));
+  }
+
+  .headline {
+    font-family: "PingFang SC", "Hiragino Sans GB", -apple-system, system-ui;
+    font-size: 80px;
+    font-weight: 600;
+    line-height: 1.22;
+    text-align: center;
+    letter-spacing: -0.01em;
+    color: #3d3929;
+    margin-bottom: 18px;
+  }
+  .headline .accent {
+    color: #c96442;
+  }
+  .headline .ellipsis {
+    color: #c96442;
+    font-family: "Fraunces", Georgia, serif;
+    font-style: italic;
+    font-weight: 400;
+    letter-spacing: 0.02em;
+  }
+
+  .divider {
+    width: 56px; height: 2px;
+    background: #c96442;
+    opacity: 0.6;
+    margin: 50px 0 36px;
+  }
+
+  .brand {
+    font-family: "Fraunces", "Iowan Old Style", Georgia, serif;
+    font-style: italic;
+    font-weight: 500;
+    font-size: 68px;
+    color: #c96442;
+    letter-spacing: -0.015em;
+    line-height: 1;
+    margin-bottom: 22px;
+  }
+
+  .subtitle {
+    font-family: "PingFang SC", -apple-system, system-ui;
+    font-size: 26px;
+    font-weight: 400;
+    color: #83786b;
+    letter-spacing: 0.06em;
+    text-align: center;
+    line-height: 1.65;
+  }
+
+  .footer {
+    margin-top: auto;
+    display: flex; flex-direction: column; align-items: center; gap: 6px;
+  }
+  .footer .url {
+    font-family: "JetBrains Mono", monospace;
+    font-size: 20px;
+    color: #83786b;
+    letter-spacing: 0.04em;
+  }
+  .footer .tag {
+    font-family: "Geist", sans-serif;
+    font-size: 12px;
+    color: rgba(131,120,107,0.5);
+    letter-spacing: 0.32em;
+    text-transform: uppercase;
+    margin-top: 6px;
+  }
+</style>
+</head>
+<body>
+  <div class="ghost one"></div>
+  <div class="ghost two"></div>
+
+  <div class="frame">
+    <img class="logo" src="../../src-tauri/icons/icon.png" alt="Claudies">
+
+    <div class="headline">
+      如果一个 Claude<br>
+      <span class="accent">账号不够用</span><span class="ellipsis">…</span>
+    </div>
+
+    <div class="divider"></div>
+
+    <div class="brand">Claudies</div>
+    <div class="subtitle">
+      macOS 多账号并行 · 完全隔离<br>
+      Claude Desktop + Code · 一键切换
+    </div>
+
+    <div class="footer">
+      <div class="url">github.com/democra-ai/claudies</div>
+      <div class="tag">open source · macOS · free</div>
+    </div>
+  </div>
+</body>
+</html>
