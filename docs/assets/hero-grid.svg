@@ -136,10 +136,10 @@
     <line x1="220" y1="182" x2="860" y2="182" stroke="#e2dccb" stroke-width="1"/>
   </g>
 
-  <!-- Row: democra-ai (animation: copied → diverged → copied) -->
+  <!-- Row: my-app (animation: copied → diverged → copied) -->
   <g>
-    <text x="240" y="204" font-size="12" font-family="-apple-system, sans-serif" fill="#3d3929">democra-ai</text>
-    <text x="240" y="216" font-size="9.5" font-family="ui-monospace, Menlo, monospace" fill="#83786b">~/democra-ai · 12 sessions · 2h ago</text>
+    <text x="240" y="204" font-size="12" font-family="-apple-system, sans-serif" fill="#3d3929">my-app</text>
+    <text x="240" y="216" font-size="9.5" font-family="ui-monospace, Menlo, monospace" fill="#83786b">~/projects/my-app · 12 sessions · 2h ago</text>
     <g font-family="ui-monospace, Menlo, monospace" font-size="18" text-anchor="middle">
       <text x="540" y="213" fill="#3d3929">●</text>
       <text x="690" y="213" fill="#c96442">
@@ -154,10 +154,10 @@
     <line x1="220" y1="228" x2="860" y2="228" stroke="#e2dccb" stroke-width="0.5" stroke-opacity="0.6"/>
   </g>
 
-  <!-- Row: anything (shared across two) -->
+  <!-- Row: notes (shared across two) -->
   <g>
-    <text x="240" y="250" font-size="12" font-family="-apple-system, sans-serif" fill="#3d3929">anything</text>
-    <text x="240" y="262" font-size="9.5" font-family="ui-monospace, Menlo, monospace" fill="#83786b">~/anything · 4 sessions · 5d ago</text>
+    <text x="240" y="250" font-size="12" font-family="-apple-system, sans-serif" fill="#3d3929">notes</text>
+    <text x="240" y="262" font-size="9.5" font-family="ui-monospace, Menlo, monospace" fill="#83786b">~/notes · 4 sessions · 5d ago</text>
     <g font-family="ui-monospace, Menlo, monospace" font-size="18" text-anchor="middle">
       <text x="540" y="259" fill="#c96442">■</text>
       <text x="690" y="259" font-size="14" fill="#bfb6a3">·</text>
@@ -166,10 +166,10 @@
     <line x1="220" y1="274" x2="860" y2="274" stroke="#e2dccb" stroke-width="0.5" stroke-opacity="0.6"/>
   </g>
 
-  <!-- Row: position-paper (animated cell: independent → shared) -->
+  <!-- Row: docs (animated cell: independent → shared) -->
   <g>
-    <text x="240" y="296" font-size="12" font-family="-apple-system, sans-serif" fill="#3d3929">position paper</text>
-    <text x="240" y="308" font-size="9.5" font-family="ui-monospace, Menlo, monospace" fill="#83786b">~/democra-ai/position paper · 1 session</text>
+    <text x="240" y="296" font-size="12" font-family="-apple-system, sans-serif" fill="#3d3929">docs</text>
+    <text x="240" y="308" font-size="9.5" font-family="ui-monospace, Menlo, monospace" fill="#83786b">~/projects/my-app/docs · 1 session</text>
     <g font-family="ui-monospace, Menlo, monospace" font-size="18" text-anchor="middle">
       <text x="540" y="305" fill="#3d3929">●</text>
       <!-- animated: cycles through absent → independent → shared → absent -->
@@ -192,10 +192,10 @@
     <line x1="220" y1="320" x2="860" y2="320" stroke="#e2dccb" stroke-width="0.5" stroke-opacity="0.6"/>
   </g>
 
-  <!-- Row: LLM (independent everywhere) -->
+  <!-- Row: scripts (independent everywhere) -->
   <g>
-    <text x="240" y="342" font-size="12" font-family="-apple-system, sans-serif" fill="#3d3929">LLM</text>
-    <text x="240" y="354" font-size="9.5" font-family="ui-monospace, Menlo, monospace" fill="#83786b">~/LLM · 22 sessions · 2d ago</text>
+    <text x="240" y="342" font-size="12" font-family="-apple-system, sans-serif" fill="#3d3929">scripts</text>
+    <text x="240" y="354" font-size="9.5" font-family="ui-monospace, Menlo, monospace" fill="#83786b">~/scripts · 22 sessions · 2d ago</text>
     <g font-family="ui-monospace, Menlo, monospace" font-size="16" text-anchor="middle">
       <text x="540" y="351" fill="#83786b">○</text>
       <text x="690" y="351" fill="#83786b">○</text>
