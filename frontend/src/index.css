@@ -113,18 +113,6 @@
 }
 
 @layer utilities {
-  /* Tauri's `titleBarStyle: Overlay` hides the native title bar but
-   * doesn't make the webview draggable on its own — these CSS classes
-   * (Electron-compatible) re-enable drag where we want it. */
-  .drag-region {
-    -webkit-app-region: drag;
-    app-region: drag;
-  }
-  .no-drag {
-    -webkit-app-region: no-drag;
-    app-region: no-drag;
-  }
-
   .scrollbar-thin {
     scrollbar-width: thin;
   }

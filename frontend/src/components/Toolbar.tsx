@@ -23,20 +23,35 @@ export function Toolbar({ onRefresh, busy }: ToolbarProps) {
   const ThemeIcon = theme === "dark" ? Moon : theme === "light" ? Sun : SunMoon;
 
   return (
-    // `drag-region` (CSS `-webkit-app-region: drag`) makes empty space
-    // act like a native title bar. Children that need to receive clicks
-    // (buttons, inputs) are tagged `no-drag` to opt out.
-    <header className="drag-region flex h-14 items-center justify-between border-b bg-background/95 pl-[92px] pr-5 backdrop-blur supports-[backdrop-filter]:bg-background/60">
-      <div className="flex items-center gap-3">
-        <div className="flex h-7 w-7 items-center justify-center rounded-md bg-primary font-display text-[14px] font-semibold text-primary-foreground">
+    // `data-tauri-drag-region` makes the bar draggable via Tauri's native
+    // macOS drag handler (NSWindow.performWindowDragWithEvent). We
+    // deliberately don't use CSS `-webkit-app-region: drag` because that
+    // hits a known macOS Sonoma+ WebKit bug where drag works once and then
+    // gets stuck. The attribute path is bug-free. Interactive children
+    // (buttons) don't carry the attribute, so Tauri skips drag on them.
+    <header
+      data-tauri-drag-region
+      className="flex h-12 items-center justify-between border-b bg-background/95 pl-[88px] pr-5 backdrop-blur supports-[backdrop-filter]:bg-background/60"
+    >
+      <div
+        data-tauri-drag-region
+        className="flex items-center gap-2.5"
+      >
+        <div
+          data-tauri-drag-region
+          className="flex h-6 w-6 items-center justify-center rounded-md bg-primary font-display text-[13px] font-semibold text-primary-foreground"
+        >
           C
         </div>
-        <h1 className="font-display text-[17px] leading-none tracking-tight">
+        <h1
+          data-tauri-drag-region
+          className="font-display text-[15px] leading-none tracking-tight"
+        >
           Claude Multiprofile
         </h1>
       </div>
 
-      <div className="no-drag flex items-center gap-1">
+      <div className="flex items-center gap-1">
         <Tooltip>
           <TooltipTrigger asChild>
             <Button
