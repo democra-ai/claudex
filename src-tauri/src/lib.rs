@@ -3641,22 +3641,60 @@ fn list_session_library(kind: SessionKind) -> Result<Vec<LibraryRow>, String> {
             })
             .collect();
 
-        // Pretty label: basename for cwd, processName as-is.
-        let label = match kind {
-            SessionKind::CodePanel => {
-                let p = Path::new(&key);
-                p.file_name()
-                    .and_then(|n| n.to_str())
-                    .map(String::from)
-                    .unwrap_or_else(|| key.clone())
-            }
-            SessionKind::CoworkAgent => key.clone(),
+        // Pick the most-recent session for this key across ALL profiles —
+        // it carries the human-readable `title` we'll use to surface what
+        // this row is actually *about*.
+        let best_session = per_install
+            .iter()
+            .flat_map(|(_, sessions, _)| sessions.iter())
+            .filter(|s| project_key(s, kind).as_deref() == Some(key.as_str()))
+            .max_by_key(|s| s.last_activity_ms);
+        let best_title = best_session
+            .and_then(|s| s.title.clone())
+            .filter(|t| !t.is_empty());
+
+        let basename = Path::new(&key)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .map(String::from)
+            .unwrap_or_else(|| key.clone());
+
+        // Cowork spawns git worktrees under `<repo>/.claude/worktrees/<random>`;
+        // basename is meaningless. Same story for Cowork agent VMs — their
+        // processName is a "happy-rubin-dewdney" style placeholder. In both
+        // cases, prefer the session title; fall back to basename only when
+        // a session has no title yet (rare — Claude auto-titles on first
+        // message).
+        let is_random_dir = key.contains("/.claude/worktrees/")
+            || matches!(kind, SessionKind::CoworkAgent);
+
+        let label = if is_random_dir {
+            best_title.clone().unwrap_or_else(|| basename.clone())
+        } else {
+            basename.clone()
         };
+
+        // Description: tildified path for code panel, the VM name when it's
+        // a Cowork agent run. If we used the title for the label *and* the
+        // basename differs (worktree case), include both so the user can
+        // still see "which clone".
+        let home = std::env::var("HOME").unwrap_or_default();
         let description = match kind {
-            SessionKind::CodePanel => Some(
-                key.replace(&std::env::var("HOME").unwrap_or_default(), "~"),
-            ),
-            SessionKind::CoworkAgent => Some("Cowork VM".into()),
+            SessionKind::CodePanel => {
+                let path = key.replace(&home, "~");
+                if is_random_dir && label != basename {
+                    Some(format!("{path} · {basename}"))
+                } else {
+                    Some(path)
+                }
+            }
+            SessionKind::CoworkAgent => {
+                if label != key {
+                    Some(format!("Cowork VM · {key}"))
+                } else {
+                    Some("Cowork VM".into())
+                }
+            }
         };
 
         let mut row = LibraryRow {
