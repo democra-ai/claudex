@@ -1,8 +1,8 @@
 <p align="center">
-  <img src="docs/assets/logo.svg" alt="Claudius logo" width="120">
+  <img src="docs/assets/logo.svg" alt="Claudies logo" width="120">
 </p>
 
-<h1 align="center">Claudius</h1>
+<h1 align="center">Claudies</h1>
 
 <p align="center">
   Multiple Claude Desktop and Claude Code accounts, side by side on macOS.
@@ -10,13 +10,13 @@
 
 <p align="center">
   <a href="https://opensource.org/licenses/MIT"><img alt="License" src="https://img.shields.io/badge/License-MIT-yellow.svg"></a>
-  <a href="https://github.com/democra-ai/claudius/releases"><img alt="Release" src="https://img.shields.io/github/v/release/democra-ai/claudius?label=release"></a>
+  <a href="https://github.com/democra-ai/claudies/releases"><img alt="Release" src="https://img.shields.io/github/v/release/democra-ai/claudies?label=release"></a>
   <a href="https://www.apple.com/macos/"><img alt="Platform" src="https://img.shields.io/badge/platform-macOS-lightgrey"></a>
   <a href="https://v2.tauri.app/"><img alt="Tauri" src="https://img.shields.io/badge/built%20with-Tauri%202-24C8DB.svg"></a>
 </p>
 
 <p align="center">
-  <img src="docs/assets/hero.png" alt="Claudius screenshot" width="880">
+  <img src="docs/assets/hero.png" alt="Claudies screenshot" width="880">
 </p>
 
 Each profile keeps its own login, chats, settings, MCP connectors, plugins, and skills. Open multiple Claude windows at once, each on a different account. Share extensions, MCP servers, and skills across profiles selectively, through a live matrix UI.
@@ -37,18 +37,18 @@ Each profile keeps its own login, chats, settings, MCP connectors, plugins, and 
 
 ### App (recommended)
 
-Grab the latest `.dmg` from **[Releases](https://github.com/democra-ai/claudius/releases/latest)** and drag **Claudius.app** to `/Applications`.
+Grab the latest `.dmg` from **[Releases](https://github.com/democra-ai/claudies/releases/latest)** and drag **Claudies.app** to `/Applications`.
 
 The build is unsigned, so first launch needs a right-click → **Open**, or:
 
 ```bash
-xattr -dr com.apple.quarantine "/Applications/Claudius.app"
+xattr -dr com.apple.quarantine "/Applications/Claudies.app"
 ```
 
 ### CLI only
 
 ```bash
-npm install -g github:democra-ai/claudius
+npm install -g github:democra-ai/claudies
 ```
 
 Node 18+. The Code half works on Linux; the Desktop half is macOS-only because Claude Desktop is.
@@ -56,8 +56,8 @@ Node 18+. The Code half works on Linux; the Desktop half is macOS-only because C
 ### Build from source
 
 ```bash
-git clone https://github.com/democra-ai/claudius
-cd claudius
+git clone https://github.com/democra-ai/claudies
+cd claudies
 npm install && npm run frontend:install
 npm run tauri:dev      # GUI with hot reload
 npm run tauri:build    # produces .app + .dmg
@@ -67,7 +67,7 @@ Requires Rust, Xcode CLT, Node 18+.
 
 ## Quick start
 
-1. Open Claudius.
+1. Open Claudies.
 2. Sidebar bottom → **NEW PROFILE** → name it `work` → check ☑ Desktop + ☑ Code → click `+`.
 3. `Claude WORK.app` lands in `~/Applications/`. Drag it to the Dock.
 4. New terminal tab — the `claude-work` alias is live.
@@ -127,7 +127,7 @@ Pass `--help` to any command for flags.
 
 | Tool | Desktop | Code | GUI | macOS | Linux |
 |------|:-------:|:----:|:---:|:-----:|:-----:|
-| **Claudius** | ✓ | ✓ | ✓ | ✓ | partial |
+| **Claudies** | ✓ | ✓ | ✓ | ✓ | partial |
 | [aimux](https://github.com/Digital-Threads/aimux) | — | ✓ | — | ✓ | ✓ |
 | [aisw](https://crates.io/crates/aisw) | — | ✓ | — | ✓ | ✓ |
 | [Jean-Claude](https://madewithlove.com/blog/running-multiple-claude-accounts-without-logging-out/) | — | ✓ | — | ✓ | ✓ |

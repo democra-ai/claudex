@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Claudius",
-  "version": "0.1.13",
-  "identifier": "com.claude-multiprofile.manager",
+  "productName": "Claudies",
+  "version": "0.2.0",
+  "identifier": "com.claudies.app",
   "build": {
     "beforeDevCommand": "npm --prefix frontend run dev",
     "beforeBuildCommand": "npm --prefix frontend run build",
@@ -13,7 +13,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "Claudius",
+        "title": "Claudies",
         "width": 1100,
         "height": 760,
         "minWidth": 920,
@@ -33,8 +33,8 @@
     "icon": ["icons/icon.icns"],
     "category": "DeveloperTool",
     "shortDescription": "Manage multiple Claude Desktop profiles, side by side.",
-    "longDescription": "Run multiple isolated Claude Desktop and Claude Code profiles on macOS, with selective content sharing for extensions, MCP servers, and skills.",
-    "copyright": "© 2026 claude-multiprofile contributors",
+    "longDescription": "Run multiple isolated Claude Desktop and Claude Code profiles on macOS, with selective content sharing for extensions, MCPs, and skills.",
+    "copyright": "© 2026 Claudies contributors",
     "macOS": {
       "minimumSystemVersion": "11.0"
     }
