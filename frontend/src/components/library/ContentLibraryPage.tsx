@@ -45,11 +45,13 @@ function SidebarProfileRow({
   onLaunch,
   busy,
 }: SidebarProfileRowProps) {
+  const running = profile.is_running;
   return (
     <div
       className={cn(
         "group flex items-center gap-1.5 rounded-md pl-1.5 pr-1 transition-colors",
         selected ? "bg-primary/8" : "hover:bg-muted/60",
+        running && !selected && "bg-primary/4",
         !visible && "opacity-55",
       )}
     >
@@ -65,28 +67,53 @@ function SidebarProfileRow({
         className={cn(
           "flex min-w-0 flex-1 items-center gap-2 py-1.5 pl-1 pr-1 text-left",
         )}
-        title={`Show ${profile.name} details`}
+        title={
+          running
+            ? `${profile.name} — currently running`
+            : `Show ${profile.name} details`
+        }
       >
+        {/* Status dot: pulsing green when live, muted otherwise. */}
+        <span className="relative inline-flex h-2 w-2 shrink-0 items-center justify-center">
+          {running ? (
+            <>
+              <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-primary/60" />
+              <span className="relative inline-flex h-2 w-2 rounded-full bg-primary" />
+            </>
+          ) : (
+            <span
+              className={cn(
+                "inline-block h-1.5 w-1.5 rounded-full",
+                profile.kind === "default"
+                  ? "bg-muted-foreground/60"
+                  : "bg-muted-foreground/30",
+              )}
+            />
+          )}
+        </span>
         <span
           className={cn(
-            "inline-block h-1.5 w-1.5 shrink-0 rounded-full",
-            profile.kind === "default" ? "bg-primary" : "bg-muted-foreground/60",
+            "truncate font-sans text-[13px]",
+            running && "font-medium",
           )}
-        />
-        <span className="truncate font-sans text-[13px]">
+        >
           {profile.kind === "default" ? "Default" : profile.name}
         </span>
-        {selected ? (
+        {running ? (
+          <span className="ml-auto rounded-full bg-primary/15 px-1.5 py-0.5 font-sans text-[9px] uppercase tracking-wider text-primary">
+            live
+          </span>
+        ) : selected ? (
           <Info className="ml-auto h-3 w-3 shrink-0 text-primary" />
         ) : null}
       </button>
       <button
         type="button"
         onClick={onLaunch}
-        disabled={busy}
-        className="shrink-0 rounded-md p-1 text-muted-foreground opacity-0 transition-all hover:bg-primary/10 hover:text-primary group-hover:opacity-100 disabled:opacity-40"
-        title={`Launch ${profile.name}`}
-        aria-label={`Launch ${profile.name}`}
+        disabled={busy || running}
+        className="shrink-0 rounded-md p-1 text-muted-foreground opacity-0 transition-all hover:bg-primary/10 hover:text-primary group-hover:opacity-100 disabled:cursor-not-allowed disabled:opacity-40"
+        title={running ? `${profile.name} is already running` : `Launch ${profile.name}`}
+        aria-label={running ? `${profile.name} is already running` : `Launch ${profile.name}`}
       >
         <Play className="h-3 w-3" />
       </button>
@@ -109,9 +136,29 @@ export default function ContentLibraryPage() {
   const [newProfileName, setNewProfileName] = useState("");
   const { toasts, push, dismiss } = useToasts();
 
+  // Display order: live profile first (so the user sees their *current*
+  // working set front-and-center, not whatever happens to be on disk first),
+  // then the un-renamed Default install, then managed profiles alpha.
+  // This addresses a subtle but important UX bug: kind === "default" only
+  // means "the install at the canonical path," NOT "currently in use" —
+  // a user might do all their work in a renamed profile.
+  const sortedInstalls = useMemo(() => {
+    const score = (i: DesktopInstall) => {
+      if (i.is_running) return 0;
+      if (i.kind === "default") return 1;
+      return 2;
+    };
+    return [...installs].sort((a, b) => {
+      const sa = score(a);
+      const sb = score(b);
+      if (sa !== sb) return sa - sb;
+      return a.name.localeCompare(b.name);
+    });
+  }, [installs]);
+
   const visibleProfiles = useMemo(
-    () => installs.filter((i) => visibleIds.has(i.id)),
-    [installs, visibleIds],
+    () => sortedInstalls.filter((i) => visibleIds.has(i.id)),
+    [sortedInstalls, visibleIds],
   );
 
   const counts = useMemo(() => {
@@ -179,6 +226,28 @@ export default function ContentLibraryPage() {
   useEffect(() => {
     loadInstalls();
   }, [loadInstalls]);
+
+  // Poll running status every 10s so the "live" badge tracks reality
+  // when the user opens/closes Claude.app in another window. The poll
+  // only re-reads the install registry + ps, no heavy session scans.
+  useEffect(() => {
+    if (!isTauri()) return;
+    const id = setInterval(() => {
+      api
+        .listDesktopInstalls()
+        .then((list) => {
+          // Only update if the running-state diff actually changed —
+          // avoids unnecessary re-renders.
+          setInstalls((current) => {
+            if (current.length !== list.length) return list;
+            const sameRunning = current.every((c, i) => c.is_running === list[i]?.is_running);
+            return sameRunning ? current : list;
+          });
+        })
+        .catch(() => undefined);
+    }, 10_000);
+    return () => clearInterval(id);
+  }, []);
 
   useEffect(() => {
     loadKind(activeKind);
@@ -391,7 +460,7 @@ export default function ContentLibraryPage() {
             </span>
           </div>
           <div className="space-y-0.5 px-1">
-            {installs.map((p) => (
+            {sortedInstalls.map((p) => (
               <SidebarProfileRow
                 key={p.id}
                 profile={p}

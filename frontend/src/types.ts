@@ -8,12 +8,17 @@
 export type DesktopInstall = {
   id: string;
   name: string;
-  /** "default" for the original Claude install, "profile" for managed ones. */
+  /** "default" for the original Claude install, "profile" for managed ones.
+   *  Orthogonal to is_running — the user might use a profile as their
+   *  primary even when "default" exists on disk. */
   kind: "default" | "profile";
   data_dir: string;
   app_path: string | null;
   launcher_path: string | null;
   managed: boolean;
+  /** True when a Claude.app process is currently open against this data_dir.
+   *  Detected by parsing --user-data-dir from running `ps` output. */
+  is_running: boolean;
 };
 
 export type PairExtensionShare = {

@@ -217,12 +217,28 @@ export function ProfileDetail({
   return (
     <div className="sheet-slide flex h-full flex-col">
       {/* Header — codexbar's provider card pattern */}
-      <header className="border-b px-4 py-3.5">
+      <header
+        className={cn(
+          "border-b px-4 py-3.5",
+          install.is_running && "bg-primary/4",
+        )}
+      >
         <div className="flex items-start justify-between gap-2">
           <div className="min-w-0 flex-1">
-            <div className="flex items-center gap-1.5 font-sans text-[10px] uppercase tracking-[0.14em] text-muted-foreground">
+            <div className="flex items-center gap-2 font-sans text-[10px] uppercase tracking-[0.14em] text-muted-foreground">
               <Monitor className="h-3 w-3" />
-              {install.kind === "default" ? "Default Desktop" : "Profile"}
+              <span>
+                {install.kind === "default" ? "Default Desktop" : "Profile"}
+              </span>
+              {install.is_running ? (
+                <span className="inline-flex items-center gap-1 rounded-full bg-primary/15 px-1.5 py-0.5 text-[9px] tracking-wider text-primary">
+                  <span className="relative inline-flex h-1.5 w-1.5">
+                    <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-primary/60" />
+                    <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-primary" />
+                  </span>
+                  live
+                </span>
+              ) : null}
             </div>
             <div className="mt-0.5 flex items-baseline justify-between gap-2">
               <h2 className="truncate font-display text-2xl leading-tight tracking-tight">
@@ -243,7 +259,8 @@ export function ProfileDetail({
             </div>
             {loadedAt > 0 ? (
               <div className="mt-1 font-sans text-[10px] text-muted-foreground/70">
-                Updated {formatRelativeTime(loadedAt)}
+                {install.is_running ? "Active · " : ""}Updated{" "}
+                {formatRelativeTime(loadedAt)}
               </div>
             ) : null}
           </div>
@@ -554,10 +571,13 @@ export function ProfileDetail({
               <Button
                 size="sm"
                 onClick={() => onLaunch(install)}
+                disabled={install.is_running}
                 className="h-8 w-full justify-start gap-2 rounded-md font-sans text-xs"
               >
                 <Play className="h-3 w-3" />
-                Launch this profile
+                {install.is_running
+                  ? "Already running — bring window forward"
+                  : "Launch this profile"}
               </Button>
               <button
                 type="button"

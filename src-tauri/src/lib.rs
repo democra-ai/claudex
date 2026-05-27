@@ -27,6 +27,12 @@ pub struct DesktopInstall {
     pub app_path: Option<String>,
     pub launcher_path: Option<String>,
     pub managed: bool,
+    /// True when a Claude.app process is currently open against this
+    /// data_dir. Detected by parsing `--user-data-dir=` from `ps` output.
+    /// "Default" can be `kind == "default"` AND `is_running == false` —
+    /// the labels are orthogonal.
+    #[serde(default)]
+    pub is_running: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -595,6 +601,7 @@ fn install_from_default() -> Result<Option<DesktopInstall>, String> {
         app_path: Some(app_path.to_string_lossy().to_string()),
         launcher_path: None,
         managed: false,
+        is_running: false,
     }))
 }
 
@@ -607,7 +614,65 @@ fn install_from_profile(profile: &RegistryProfile) -> Option<DesktopInstall> {
         app_path: Some(desktop.claude_app_path.clone()),
         launcher_path: Some(desktop.app_path.clone()),
         managed: true,
+        is_running: false,
     })
+}
+
+/// Read currently-running Claude.app instances by parsing `ps -A -o command`.
+/// Each Claude.app launched with `--user-data-dir=<path>` corresponds to a
+/// managed profile; a Claude.app launched without that flag is the default
+/// install. Returns the set of data_dir strings that are live right now.
+///
+/// macOS `ps` truncates long lines unless you ask for `-ww` and a wide
+/// format, so we use `args` (full command line) with no width limit.
+fn detect_running_data_dirs() -> Vec<PathBuf> {
+    let out = match Command::new("/bin/ps")
+        .args(["-Aww", "-o", "args="])
+        .output()
+    {
+        Ok(o) if o.status.success() => o,
+        _ => return Vec::new(),
+    };
+    let raw = String::from_utf8_lossy(&out.stdout);
+    let default_dir = default_desktop_data_dir().ok();
+    let mut running: Vec<PathBuf> = Vec::new();
+
+    for line in raw.lines() {
+        // Only the top-level Claude.app binary, not helper / renderer /
+        // GPU subprocesses (they don't carry the user-data-dir arg anyway,
+        // but skipping them keeps us robust to future arg additions).
+        let trimmed = line.trim_start();
+        if !trimmed.contains("/Claude.app/Contents/MacOS/Claude") {
+            continue;
+        }
+        if trimmed.contains("Helper")
+            || trimmed.contains("Renderer")
+            || trimmed.contains("Crashpad")
+            || trimmed.contains("GPU")
+            || trimmed.contains("Utility")
+        {
+            continue;
+        }
+        // Pull `--user-data-dir=` argument. The path can contain spaces
+        // (e.g. "Application Support"), so we cannot just split on space —
+        // the arg occupies the rest of the line up to the next flag (which
+        // would start with " --"). In practice Desktop emits it last.
+        if let Some(idx) = trimmed.find("--user-data-dir=") {
+            let after = &trimmed[idx + "--user-data-dir=".len()..];
+            // If a subsequent flag exists, cut before it.
+            let path_str = after
+                .find(" --")
+                .map(|j| &after[..j])
+                .unwrap_or(after)
+                .trim()
+                .trim_end_matches('\0');
+            running.push(PathBuf::from(path_str));
+        } else if let Some(d) = &default_dir {
+            // Claude.app launched with no flag → default install.
+            running.push(d.clone());
+        }
+    }
+    running
 }
 
 pub fn list_desktop_installs() -> Result<Vec<DesktopInstall>, String> {
@@ -621,6 +686,19 @@ pub fn list_desktop_installs() -> Result<Vec<DesktopInstall>, String> {
         if let Some(install) = install_from_profile(profile) {
             installs.push(install);
         }
+    }
+
+    // Tag each install with is_running by canonical-path matching against
+    // the currently-running Claude.app instances.
+    let running_paths = detect_running_data_dirs();
+    let running_canon: Vec<PathBuf> = running_paths
+        .iter()
+        .filter_map(|p| fs::canonicalize(p).ok().or_else(|| Some(p.clone())))
+        .collect();
+    for install in &mut installs {
+        let mine_raw = PathBuf::from(&install.data_dir);
+        let mine_canon = fs::canonicalize(&mine_raw).unwrap_or(mine_raw);
+        install.is_running = running_canon.iter().any(|p| p == &mine_canon);
     }
 
     Ok(installs)
@@ -799,6 +877,7 @@ pub fn create_desktop_profile(name: String) -> Result<DesktopInstall, String> {
         app_path: Some(claude_app_path.to_string_lossy().to_string()),
         launcher_path: Some(app_path.to_string_lossy().to_string()),
         managed: true,
+        is_running: false,
     })
 }
 
@@ -4499,6 +4578,7 @@ mod tests {
                 app_path: None,
                 launcher_path: None,
                 managed: false,
+                is_running: false,
             },
             DesktopInstall {
                 id: "profile:work".to_string(),
@@ -4508,6 +4588,7 @@ mod tests {
                 app_path: None,
                 launcher_path: None,
                 managed: true,
+                is_running: false,
             },
             DesktopInstall {
                 id: "profile:client".to_string(),
@@ -4517,6 +4598,7 @@ mod tests {
                 app_path: None,
                 launcher_path: None,
                 managed: true,
+                is_running: false,
             },
         ];
 
