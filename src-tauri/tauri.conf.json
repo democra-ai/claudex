@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Claudies",
-  "version": "0.2.0",
-  "identifier": "com.claudies.app",
+  "productName": "Claudex",
+  "version": "0.3.0",
+  "identifier": "com.claudex.app",
   "build": {
     "beforeDevCommand": "npm --prefix frontend run dev",
     "beforeBuildCommand": "npm --prefix frontend run build",
@@ -13,7 +13,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "Claudies",
+        "title": "Claudex",
         "width": 1100,
         "height": 760,
         "minWidth": 920,
@@ -34,7 +34,7 @@
     "category": "DeveloperTool",
     "shortDescription": "Manage multiple Claude Desktop profiles, side by side.",
     "longDescription": "Run multiple isolated Claude Desktop and Claude Code profiles on macOS, with selective content sharing for extensions, MCPs, and skills.",
-    "copyright": "© 2026 Claudies contributors",
+    "copyright": "© 2026 Claudex contributors",
     "macOS": {
       "minimumSystemVersion": "11.0"
     }

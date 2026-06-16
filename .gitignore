@@ -15,3 +15,7 @@ package-lock.json
 # The "_" prefix marks files that are sources for a rendered output
 # (e.g. _hero-mockup.html → hero.png, _claude-icon-ref.png → icon.png).
 docs/assets/_claude-icon-ref.png
+
+# Brand-logo build inputs (merged into logo.svg / icon.png)
+docs/assets/_src-*.svg
+docs/assets/_logo-claudex.svg

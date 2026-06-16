@@ -47,14 +47,14 @@ export function Toolbar({ onRefresh, busy }: ToolbarProps) {
           src="/logo-mark.png"
           width="22"
           height="22"
-          alt="Claudies"
+          alt="Claudex"
           style={{ imageRendering: "auto" }}
         />
         <h1
           data-tauri-drag-region
           className="font-display text-[14px] leading-none tracking-tight"
         >
-          Claudies
+          Claudex
         </h1>
       </div>
 

@@ -4740,7 +4740,7 @@ pub fn run() {
             commands::get_profile_stats
         ])
         .run(tauri::generate_context!())
-        .expect("error while running Claudies");
+        .expect("error while running Claudex");
 }
 
 #[cfg(test)]
