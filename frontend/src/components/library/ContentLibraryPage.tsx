@@ -396,6 +396,21 @@ export default function ContentLibraryPage() {
     [push],
   );
 
+  const handleLaunchCodex = useCallback(
+    async (install: CodexInstall) => {
+      setBusy(true);
+      try {
+        await api.launchCodexInstall(install.id);
+        push(`Launching Codex ${install.name === "default" ? "" : install.name}…`.trim(), "info");
+      } catch (e) {
+        push(String(e), "error");
+      } finally {
+        setBusy(false);
+      }
+    },
+    [push],
+  );
+
   const handleSelectProfile = useCallback((install: DesktopInstall) => {
     setSelection((current) =>
       current?.type === "profile" && current.install.id === install.id
@@ -419,8 +434,8 @@ export default function ContentLibraryPage() {
 
   // The "+" opens a small menu to pick the profile TYPE. A profile is either
   // a Claude profile (Desktop launcher + Code CLI alias) or a Codex profile
-  // (CODEX_HOME CLI alias) — each isolates its own login. Seeding from the
-  // matching default config dir is on by default (skills/plugins/MCP only).
+  // (Desktop launcher). Both desktop launchers work the same way: a separate
+  // --user-data-dir + a launcher .app, so each isolates its own login.
   const [addMenuOpen, setAddMenuOpen] = useState(false);
   const addMenuRef = useRef<HTMLDivElement | null>(null);
 
@@ -449,8 +464,8 @@ export default function ContentLibraryPage() {
           const code = await api.createCodeProfile(name, true);
           parts.push(`Code alias ${code.alias_name ?? `claude-${name}`}`);
         } else {
-          const codex = await api.createCodexProfile(name, true);
-          parts.push(`Codex alias ${codex.alias_name ?? `codex-${name}`}`);
+          const codex = await api.createCodexProfile(name);
+          parts.push(`Codex launcher (${codex.name})`);
         }
         push(`Created ${kind === "claude" ? "Claude" : "Codex"} profile: ${parts.join(" + ")}.`, "success");
         setNewProfileName("");
@@ -514,49 +529,61 @@ export default function ContentLibraryPage() {
         {codexInstalls.length > 0 ? (
           <div className="mx-2 border-t border-border/60 pt-3">
             <div className="mb-1.5 flex items-center justify-between px-3 font-sans text-[10px] uppercase tracking-[0.14em] text-muted-foreground/80">
-              <span>Codex accounts</span>
+              <span>Codex</span>
               <span className="font-mono text-[10px] tabular-nums text-muted-foreground/60">
                 {codexInstalls.length}
               </span>
             </div>
             <div className="space-y-0.5 px-1">
-              {codexInstalls.map((c) => {
-                const runCmd = c.alias_name ?? "codex";
-                return (
-                  <button
-                    key={c.id}
-                    type="button"
-                    onClick={async () => {
-                      try {
-                        await navigator.clipboard.writeText(runCmd);
-                        push(`Copied “${runCmd}” — run it in a terminal to use this account.`, "success");
-                      } catch {
-                        push(`Run “${runCmd}” in a terminal to use this account.`, "info");
-                      }
-                    }}
-                    title={`${c.config_dir}\nClick to copy the run command`}
-                    className="group flex w-full items-center gap-2 rounded-md px-3 py-1.5 text-left hover:bg-muted/60"
+              {codexInstalls.map((c) => (
+                <div
+                  key={c.id}
+                  className={cn(
+                    "group flex items-center gap-1.5 rounded-md pl-1.5 pr-1 transition-colors",
+                    c.is_running ? "bg-primary/4" : "hover:bg-muted/60",
+                  )}
+                >
+                  <span className="relative ml-1 inline-flex h-2 w-2 shrink-0 items-center justify-center">
+                    {c.is_running ? (
+                      <>
+                        <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-primary/60" />
+                        <span className="relative inline-flex h-2 w-2 rounded-full bg-primary" />
+                      </>
+                    ) : (
+                      <span
+                        className={cn(
+                          "inline-block h-1.5 w-1.5 rounded-full",
+                          c.kind === "default" ? "bg-muted-foreground/60" : "bg-muted-foreground/30",
+                        )}
+                      />
+                    )}
+                  </span>
+                  <span
+                    className={cn(
+                      "flex-1 truncate py-1.5 pl-1 font-sans text-[13px]",
+                      c.is_running && "font-medium",
+                    )}
+                    title={c.data_dir}
                   >
-                    <span
-                      className={cn(
-                        "h-1.5 w-1.5 shrink-0 rounded-full",
-                        c.logged_in ? "bg-foreground/60" : "bg-muted-foreground/30",
-                      )}
-                    />
-                    <span className="flex min-w-0 flex-col leading-tight">
-                      <span className="truncate font-sans text-[12px] text-foreground/90">
-                        {c.name}
-                      </span>
-                      <span className="truncate font-mono text-[10px] text-muted-foreground/70">
-                        {c.account_email ?? (c.logged_in ? "signed in" : "not signed in")}
-                      </span>
+                    {c.kind === "default" ? "Default" : c.name}
+                  </span>
+                  {c.is_running ? (
+                    <span className="mr-1 rounded-full bg-primary/15 px-1.5 py-0.5 font-sans text-[9px] uppercase tracking-wider text-primary">
+                      live
                     </span>
-                    <span className="ml-auto shrink-0 font-mono text-[9px] text-muted-foreground/50 group-hover:text-primary">
-                      {runCmd}
-                    </span>
+                  ) : null}
+                  <button
+                    type="button"
+                    onClick={() => handleLaunchCodex(c)}
+                    disabled={busy || c.is_running}
+                    className="shrink-0 rounded-md p-1 text-muted-foreground opacity-0 transition-all hover:bg-primary/10 hover:text-primary group-hover:opacity-100 disabled:cursor-not-allowed disabled:opacity-40"
+                    title={c.is_running ? `Codex ${c.name} is already running` : `Launch Codex ${c.name}`}
+                    aria-label={`Launch Codex ${c.name}`}
+                  >
+                    <Play className="h-3 w-3" />
                   </button>
-                );
-              })}
+                </div>
+              ))}
             </div>
           </div>
         ) : null}
@@ -566,8 +593,8 @@ export default function ContentLibraryPage() {
             New profile
           </div>
           {/* Type the name, then "+" opens a menu to pick the profile TYPE.
-           *  Claude → Desktop launcher + Code alias; Codex → CODEX_HOME alias.
-           *  Each type isolates its own login. */}
+           *  Claude → Desktop launcher + Code alias; Codex → Desktop launcher.
+           *  Both desktop launchers use a separate --user-data-dir. */}
           <div className="relative flex gap-1" ref={addMenuRef}>
             <Input
               value={newProfileName}
@@ -619,15 +646,15 @@ export default function ContentLibraryPage() {
                   <span className="h-2.5 w-2.5 shrink-0 rounded-[3px] bg-foreground" />
                   <span className="flex min-w-0 flex-col leading-tight">
                     <span className="font-sans text-[12px] text-foreground">Codex profile</span>
-                    <span className="font-sans text-[10px] text-muted-foreground">CODEX_HOME CLI alias</span>
+                    <span className="font-sans text-[10px] text-muted-foreground">Desktop launcher</span>
                   </span>
                 </button>
               </div>
             ) : null}
           </div>
           <p className="px-2 font-sans text-[10px] leading-snug text-muted-foreground/70">
-            Seeds skills / plugins / MCP from the matching default config. Chat
-            history and credentials are never copied.
+            Each profile is a fresh login. Sign in after first launch — quit any
+            other window of that app first so the auth link lands here.
           </p>
         </div>
       </aside>

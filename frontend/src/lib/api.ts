@@ -77,8 +77,12 @@ export const api = {
     return invoke("list_codex_installs");
   },
 
-  createCodexProfile(name: string, seedFromDefault: boolean): Promise<CodexInstall> {
-    return invoke("create_codex_profile", { name, seedFromDefault });
+  createCodexProfile(name: string): Promise<CodexInstall> {
+    return invoke("create_codex_profile", { name });
+  },
+
+  launchCodexInstall(installId: string): Promise<void> {
+    return invoke("launch_codex_install", { installId });
   },
 
   listCodeHistory(configDir: string): Promise<CodeProject[]> {

@@ -275,7 +275,15 @@ fn copy_dir_recursive(source: &Path, target: &Path) -> Result<(), String> {
         let target_path = target.join(entry.file_name());
         let file_type = entry.file_type().map_err(|e| format!("Read source file type: {e}"))?;
 
-        if file_type.is_dir() {
+        if file_type.is_symlink() {
+            // Preserve symlinks (e.g. a skill linked in from a plugin cache)
+            // by recreating the link. fs::copy can't handle a symlink-to-dir
+            // and errors with "neither a regular file nor a symlink to a
+            // regular file" — that was breaking seeding entirely.
+            if let Ok(link_target) = fs::read_link(&source_path) {
+                let _ = std::os::unix::fs::symlink(&link_target, &target_path);
+            }
+        } else if file_type.is_dir() {
             copy_dir_recursive(&source_path, &target_path)?;
         } else {
             fs::copy(&source_path, &target_path)
@@ -1867,120 +1875,140 @@ pub fn list_code_installs() -> Result<Vec<CodeInstall>, String> {
 }
 
 // ===========================================================================
-// Codex profiles (CODEX_HOME-based) — mirrors the Claude Code path above.
-//
-// Codex honors the CODEX_HOME env var to relocate its entire config/session
-// dir, exactly like Claude Code's CLAUDE_CONFIG_DIR. A "Codex profile" is a
-// `~/.codex-<name>` dir plus a `codex-<name>` shell alias that exports
-// CODEX_HOME. Codex auth is file-based (auth.json), so separate dirs are
-// separate logins — no keychain juggling needed.
+// Codex profiles (Desktop launcher) — IDENTICAL in principle to Claude
+// Desktop. The Codex desktop app is Chromium-based and honors --user-data-dir
+// (its account/login state lives in ~/Library/Application Support/Codex, a
+// Chromium profile — exactly like Claude Desktop's Electron data dir). So a
+// "Codex profile" is a separate user-data-dir + a launcher .app that opens
+// Codex against it. No seeding, no env hacks — same mechanism as Claude.
 // ===========================================================================
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct CodexInstall {
     pub id: String,
     pub name: String,
-    /// "default" for the implicit ~/.codex install, "profile" for managed ones.
+    /// "default" for the implicit Codex.app install, "profile" for managed ones.
     pub kind: String,
-    pub config_dir: String,
-    pub alias_name: Option<String>,
+    pub data_dir: String,
+    pub app_path: Option<String>,
+    pub launcher_path: Option<String>,
     pub managed: bool,
-    /// Logged-in account, decoded from auth.json (best-effort).
-    pub account_email: Option<String>,
-    pub account_id: Option<String>,
-    pub logged_in: bool,
+    pub is_running: bool,
 }
 
-fn default_codex_config_dir() -> Result<PathBuf, String> {
-    if let Ok(h) = std::env::var("CODEX_HOME") {
-        if !h.is_empty() {
-            return Ok(PathBuf::from(h));
-        }
-    }
-    Ok(home_dir()?.join(".codex"))
+fn find_codex_app() -> Result<Option<PathBuf>, String> {
+    let candidates = [
+        PathBuf::from("/Applications/Codex.app"),
+        home_dir()?.join("Applications").join("Codex.app"),
+    ];
+    Ok(candidates.into_iter().find(|path| path.exists()))
 }
 
-/// Read email + account id from a Codex `auth.json` by decoding the id_token
-/// JWT payload (middle segment, base64url). Best-effort — returns Nones if
-/// anything is missing/unparseable. We never surface the secret token itself.
-fn read_codex_identity(config_dir: &Path) -> (Option<String>, Option<String>, bool) {
-    let raw = match fs::read_to_string(config_dir.join("auth.json")) {
-        Ok(r) => r,
-        Err(_) => return (None, None, false),
-    };
-    let v: serde_json::Value = match serde_json::from_str(&raw) {
-        Ok(v) => v,
-        Err(_) => return (None, None, false),
-    };
-    let has_api_key = v
-        .get("OPENAI_API_KEY")
-        .and_then(|x| x.as_str())
-        .map(|s| !s.is_empty())
-        .unwrap_or(false);
-    let tokens = v.get("tokens");
-    let logged_in = tokens.is_some() || has_api_key;
-    let account_id = tokens
-        .and_then(|t| t.get("account_id"))
-        .and_then(|x| x.as_str())
-        .map(|s| s.to_string());
-    let mut email = None;
-    if let Some(tok) = tokens.and_then(|t| t.get("id_token")).and_then(|x| x.as_str()) {
-        if let Some(payload) = tok.split('.').nth(1) {
-            use base64::Engine;
-            if let Ok(bytes) = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(payload) {
-                if let Ok(claims) = serde_json::from_slice::<serde_json::Value>(&bytes) {
-                    email = claims
-                        .get("email")
-                        .and_then(|x| x.as_str())
-                        .map(|s| s.to_string());
-                }
-            }
-        }
-    }
-    (email, account_id, logged_in)
+fn default_codex_desktop_data_dir() -> Result<PathBuf, String> {
+    Ok(home_dir()?
+        .join("Library")
+        .join("Application Support")
+        .join("Codex"))
+}
+
+fn codex_data_dir_for(name: &str) -> Result<PathBuf, String> {
+    Ok(home_dir()?
+        .join("Library")
+        .join("Application Support")
+        .join(format!("Codex-{}", title_case(name))))
+}
+
+fn codex_launcher_path_for(name: &str) -> Result<PathBuf, String> {
+    Ok(home_dir()?
+        .join("Applications")
+        .join(format!("Codex {}.app", title_case(name))))
 }
 
 fn codex_install_from_default() -> Result<Option<CodexInstall>, String> {
-    let dir = default_codex_config_dir()?;
-    if !dir.is_dir() {
+    let Some(app_path) = find_codex_app()? else {
+        return Ok(None);
+    };
+    let data_dir = default_codex_desktop_data_dir()?;
+    if !data_dir.exists() {
         return Ok(None);
     }
-    let (account_email, account_id, logged_in) = read_codex_identity(&dir);
     Ok(Some(CodexInstall {
         id: "default".to_string(),
-        name: "Default".to_string(),
+        name: "default".to_string(),
         kind: "default".to_string(),
-        config_dir: dir.to_string_lossy().to_string(),
-        alias_name: None,
+        data_dir: data_dir.to_string_lossy().to_string(),
+        app_path: Some(app_path.to_string_lossy().to_string()),
+        launcher_path: None,
         managed: false,
-        account_email,
-        account_id,
-        logged_in,
+        is_running: false,
     }))
 }
 
 fn codex_install_from_profile(profile: &RegistryProfile) -> Option<CodexInstall> {
     let codex = profile.codex.as_ref()?;
-    let config_dir = codex.get("configDir").and_then(|v| v.as_str())?.to_string();
-    let alias_name = codex
-        .get("aliasName")
+    let data_dir = codex.get("dataDir").and_then(|v| v.as_str())?.to_string();
+    let launcher_path = codex
+        .get("launcherPath")
+        .or_else(|| codex.get("appPath"))
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
-    let (account_email, account_id, logged_in) = read_codex_identity(Path::new(&config_dir));
+    let app_path = codex
+        .get("codexAppPath")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
     Some(CodexInstall {
         id: format!("profile:{}", profile.name),
         name: profile.name.clone(),
         kind: "profile".to_string(),
-        config_dir,
-        alias_name,
+        data_dir,
+        app_path,
+        launcher_path,
         managed: true,
-        account_email,
-        account_id,
-        logged_in,
+        is_running: false,
     })
 }
 
-/// Default ~/.codex install + every Codex profile in the registry.
+/// Codex.app launched with `--user-data-dir=<path>` => that profile is live;
+/// without the flag => the default install. Mirrors detect_running_data_dirs.
+fn detect_running_codex_data_dirs() -> Vec<PathBuf> {
+    let out = match Command::new("/bin/ps").args(["-Aww", "-o", "args="]).output() {
+        Ok(o) if o.status.success() => o,
+        _ => return Vec::new(),
+    };
+    let raw = String::from_utf8_lossy(&out.stdout);
+    let default_dir = default_codex_desktop_data_dir().ok();
+    let mut running: Vec<PathBuf> = Vec::new();
+    for line in raw.lines() {
+        let trimmed = line.trim_start();
+        if !trimmed.contains("/Codex.app/Contents/MacOS/Codex") {
+            continue;
+        }
+        if trimmed.contains("Helper")
+            || trimmed.contains("Renderer")
+            || trimmed.contains("Crashpad")
+            || trimmed.contains("GPU")
+            || trimmed.contains("Utility")
+        {
+            continue;
+        }
+        if let Some(idx) = trimmed.find("--user-data-dir=") {
+            let after = &trimmed[idx + "--user-data-dir=".len()..];
+            let path_str = after
+                .find(" --")
+                .map(|j| &after[..j])
+                .unwrap_or(after)
+                .trim()
+                .trim_end_matches('\0');
+            running.push(PathBuf::from(path_str));
+        } else if let Some(d) = &default_dir {
+            running.push(d.clone());
+        }
+    }
+    running
+}
+
+/// Default Codex.app install + every Codex profile in the registry, tagged
+/// with is_running.
 pub fn list_codex_installs() -> Result<Vec<CodexInstall>, String> {
     let mut installs = Vec::new();
     if let Some(default) = codex_install_from_default()? {
@@ -1992,158 +2020,51 @@ pub fn list_codex_installs() -> Result<Vec<CodexInstall>, String> {
             installs.push(install);
         }
     }
+    let running_paths = detect_running_codex_data_dirs();
+    let running_canon: Vec<PathBuf> = running_paths
+        .iter()
+        .filter_map(|p| fs::canonicalize(p).ok().or_else(|| Some(p.clone())))
+        .collect();
+    for install in &mut installs {
+        let mine_raw = PathBuf::from(&install.data_dir);
+        let mine_canon = fs::canonicalize(&mine_raw).unwrap_or(mine_raw);
+        install.is_running = running_canon.iter().any(|p| p == &mine_canon);
+    }
     Ok(installs)
 }
 
-const CODEX_ALIAS_MARK_BEGIN: &str = "# >>> claudex codex-profiles managed (do not edit)";
-const CODEX_ALIAS_MARK_END: &str = "# <<< claudex codex-profiles managed";
-
-/// Regenerate the Codex alias block from ALL codex profiles in the registry,
-/// so adding a second profile never clobbers the first. Uses its own marker
-/// block, separate from the Claude one.
-fn write_zsh_codex_aliases(registry: &RegistryFile) -> Result<PathBuf, String> {
-    let home = home_dir()?;
-    let rc = home.join(".zshrc");
-    let existing = fs::read_to_string(&rc).unwrap_or_default();
-
-    let mut lines = String::new();
-    for p in &registry.profiles {
-        let Some(codex) = &p.codex else { continue };
-        let (Some(cfg), Some(alias)) = (
-            codex.get("configDir").and_then(|v| v.as_str()),
-            codex.get("aliasName").and_then(|v| v.as_str()),
-        ) else {
-            continue;
-        };
-        lines.push_str(&format!(
-            "alias {alias}='CODEX_HOME={} codex'\n",
-            shell_quote_single(Path::new(cfg))
-        ));
-    }
-    let block = format!("{CODEX_ALIAS_MARK_BEGIN}\n{lines}{CODEX_ALIAS_MARK_END}\n");
-
-    let new_contents = if let (Some(start), Some(end)) = (
-        existing.find(CODEX_ALIAS_MARK_BEGIN),
-        existing.find(CODEX_ALIAS_MARK_END),
-    ) {
-        let end_line_end = existing[end..]
-            .find('\n')
-            .map(|p| end + p + 1)
-            .unwrap_or(existing.len());
-        let mut out = String::with_capacity(existing.len() + block.len());
-        out.push_str(&existing[..start]);
-        out.push_str(&block);
-        out.push_str(&existing[end_line_end..]);
-        out
-    } else {
-        let mut out = existing.clone();
-        if !out.is_empty() && !out.ends_with('\n') {
-            out.push('\n');
-        }
-        if !out.is_empty() {
-            out.push('\n');
-        }
-        out.push_str(&block);
-        out
-    };
-
-    fs::write(&rc, new_contents).map_err(|e| format!("Write {}: {e}", rc.display()))?;
-    Ok(rc)
-}
-
-/// Codex subdirs/files we never seed: per-account auth, session history, and
-/// the live SQLite databases (copying an open WAL db is unsafe).
-const CODEX_SEED_EXCLUDE: &[&str] = &[
-    "sessions",
-    "archived_sessions",
-    "history.jsonl",
-    "session_index.jsonl",
-    "auth.json",
-    "log",
-    "tmp",
-    ".tmp",
-];
-
-fn copy_codex_seed_dir(source: &Path, target: &Path) -> Result<(), String> {
-    fs::create_dir_all(target).map_err(|e| format!("Create {}: {e}", target.display()))?;
-    for entry in fs::read_dir(source).map_err(|e| format!("Read {}: {e}", source.display()))? {
-        let entry = entry.map_err(|e| format!("Read seed entry: {e}"))?;
-        let name = entry.file_name();
-        let name_str = name.to_string_lossy();
-        if CODEX_SEED_EXCLUDE.iter().any(|n| name_str.as_ref() == *n) {
-            continue;
-        }
-        // Skip credentials + any SQLite db/WAL/shm — those are account-bound
-        // or unsafe to copy while Codex may be running.
-        if name_str.contains("auth")
-            || name_str.contains(".sqlite")
-            || name_str.contains("global-state")
-        {
-            continue;
-        }
-        let src_path = entry.path();
-        let dst_path = target.join(&name);
-        let ty = entry
-            .file_type()
-            .map_err(|e| format!("Read file type: {e}"))?;
-        if ty.is_dir() {
-            copy_dir_recursive(&src_path, &dst_path)?;
-        } else if ty.is_file() {
-            fs::copy(&src_path, &dst_path)
-                .map_err(|e| format!("Copy {}: {e}", src_path.display()))?;
-        }
-    }
-    Ok(())
-}
-
-pub fn create_codex_profile(
-    name: String,
-    seed_from_default: bool,
-) -> Result<CodexInstall, String> {
-    let clean = sanitize_profile_name(&name);
-    if clean.is_empty() {
+/// Create a Codex Desktop profile: a fresh user-data-dir + a launcher .app
+/// that opens Codex against it. Same machinery as create_desktop_profile.
+pub fn create_codex_profile(name: String) -> Result<CodexInstall, String> {
+    let clean_name = sanitize_profile_name(&name);
+    if clean_name.is_empty() {
         return Err("Profile name cannot be empty".to_string());
     }
-    if clean == "codex" {
-        return Err("Alias would shadow the bare `codex` command".to_string());
-    }
 
-    let home = home_dir()?;
-    let config_dir = home.join(format!(".codex-{clean}"));
-    let default_dir = default_codex_config_dir()?;
-    if config_dir == default_dir {
-        return Err("Refusing to use the default ~/.codex directory".to_string());
+    let codex_app_path = find_codex_app()?
+        .ok_or_else(|| "Codex.app was not found in /Applications or ~/Applications".to_string())?;
+    let data_dir = codex_data_dir_for(&clean_name)?;
+    if data_dir == default_codex_desktop_data_dir()? {
+        return Err("Refusing to use the default Codex data directory".to_string());
     }
-    let alias_name = format!("codex-{clean}");
+    let launcher_path = codex_launcher_path_for(&clean_name)?;
 
     let mut registry = load_registry()?;
-    let existing_idx = registry.profiles.iter().position(|p| p.name == clean);
+    let existing_idx = registry.profiles.iter().position(|p| p.name == clean_name);
     if let Some(i) = existing_idx {
         if registry.profiles[i].codex.is_some() {
-            return Err(format!(
-                "Codex profile \"{clean}\" already exists — pick a different name"
-            ));
+            return Err(format!("Codex profile \"{clean_name}\" already exists"));
         }
     }
-    if config_dir.exists() {
-        return Err(format!(
-            "Config dir {} already exists — pick a different name",
-            config_dir.display()
-        ));
-    }
-    fs::create_dir_all(&config_dir)
-        .map_err(|e| format!("Create {}: {e}", config_dir.display()))?;
 
-    if seed_from_default && default_dir.exists() {
-        copy_codex_seed_dir(&default_dir, &config_dir)?;
-    }
+    fs::create_dir_all(&data_dir).map_err(|e| format!("Create Codex profile data dir: {e}"))?;
+    compile_launcher_app(&clean_name, &data_dir, &launcher_path, &codex_app_path)?;
 
     let codex_json = serde_json::json!({
-        "configDir": config_dir.to_string_lossy(),
-        "aliasName": alias_name,
-        "shell": "zsh",
+        "dataDir": data_dir.to_string_lossy(),
+        "launcherPath": launcher_path.to_string_lossy(),
+        "codexAppPath": codex_app_path.to_string_lossy(),
     });
-
     match existing_idx {
         Some(i) => {
             registry.profiles[i].codex = Some(codex_json);
@@ -2153,7 +2074,7 @@ pub fn create_codex_profile(
         }
         None => {
             registry.profiles.push(RegistryProfile {
-                name: clean.clone(),
+                name: clean_name.clone(),
                 profile_type: "codex".to_string(),
                 desktop: None,
                 code: None,
@@ -2163,20 +2084,51 @@ pub fn create_codex_profile(
         }
     }
     save_registry(&registry)?;
-    write_zsh_codex_aliases(&registry)?;
 
-    let (account_email, account_id, logged_in) = read_codex_identity(&config_dir);
     Ok(CodexInstall {
-        id: format!("profile:{clean}"),
-        name: clean,
+        id: format!("profile:{clean_name}"),
+        name: clean_name,
         kind: "profile".to_string(),
-        config_dir: config_dir.to_string_lossy().to_string(),
-        alias_name: Some(alias_name),
+        data_dir: data_dir.to_string_lossy().to_string(),
+        app_path: Some(codex_app_path.to_string_lossy().to_string()),
+        launcher_path: Some(launcher_path.to_string_lossy().to_string()),
         managed: true,
-        account_email,
-        account_id,
-        logged_in,
+        is_running: false,
     })
+}
+
+pub fn launch_codex_install(install_id: String) -> Result<(), String> {
+    let install = list_codex_installs()?
+        .into_iter()
+        .find(|i| i.id == install_id)
+        .ok_or_else(|| format!("Codex install not found: {install_id}"))?;
+
+    if install.kind == "default" {
+        let app = install
+            .app_path
+            .ok_or_else(|| "Default Codex app path is missing".to_string())?;
+        let mut open = Command::new("/usr/bin/open");
+        open.arg(app);
+        return run_command(open, "Launch Codex");
+    }
+
+    if let Some(launcher) = install
+        .launcher_path
+        .as_ref()
+        .filter(|p| Path::new(p).exists())
+    {
+        let mut open = Command::new("/usr/bin/open");
+        open.arg(launcher);
+        return run_command(open, "Launch Codex profile");
+    }
+
+    // Fallback: open Codex.app directly against the profile's data dir.
+    let app = install
+        .app_path
+        .ok_or_else(|| "Codex app path is missing".to_string())?;
+    let mut open = Command::new("/usr/bin/open");
+    open.args(["-n", "-a", &app, "--args", "--user-data-dir", &install.data_dir]);
+    run_command(open, "Launch Codex profile")
 }
 
 /// Best-effort: replace every `-` with `/`. Original `-` in dir names is lost,
@@ -4861,11 +4813,13 @@ mod commands {
     }
 
     #[tauri::command]
-    pub fn create_codex_profile(
-        name: String,
-        seed_from_default: bool,
-    ) -> Result<CodexInstall, String> {
-        super::create_codex_profile(name, seed_from_default)
+    pub fn create_codex_profile(name: String) -> Result<CodexInstall, String> {
+        super::create_codex_profile(name)
+    }
+
+    #[tauri::command]
+    pub fn launch_codex_install(install_id: String) -> Result<(), String> {
+        super::launch_codex_install(install_id)
     }
 
     #[tauri::command]
@@ -5052,6 +5006,7 @@ pub fn run() {
             commands::list_code_installs,
             commands::list_codex_installs,
             commands::create_codex_profile,
+            commands::launch_codex_install,
             commands::list_code_history,
             commands::list_pair_code_history_sharing,
             commands::apply_pair_code_history_sharing,
@@ -6205,40 +6160,18 @@ mod tests {
     }
 
     #[test]
-    fn read_codex_identity_decodes_email_from_id_token_jwt() {
-        use base64::Engine;
-        let dir = tempfile::tempdir().unwrap();
-        // Build a fake JWT: header.payload.sig where payload encodes the email.
-        let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD
-            .encode(br#"{"email":"dev@example.com","sub":"auth0|abc"}"#);
-        let jwt = format!("eyJhbGciOiJSUzI1NiJ9.{payload}.sig");
-        let auth = serde_json::json!({
-            "auth_mode": "chatgpt",
-            "tokens": { "id_token": jwt, "account_id": "acct_123" }
-        });
-        fs::write(dir.path().join("auth.json"), auth.to_string()).unwrap();
-
-        let (email, account_id, logged_in) = read_codex_identity(dir.path());
-        assert_eq!(email.as_deref(), Some("dev@example.com"));
-        assert_eq!(account_id.as_deref(), Some("acct_123"));
-        assert!(logged_in);
-    }
-
-    #[test]
-    fn read_codex_identity_handles_missing_and_malformed() {
-        let dir = tempfile::tempdir().unwrap();
-        // No auth.json at all -> not logged in, no identity.
-        let (e, a, l) = read_codex_identity(dir.path());
-        assert!(e.is_none() && a.is_none() && !l);
-        // API-key-only auth -> logged in, but no email/account from a JWT.
-        fs::write(
-            dir.path().join("auth.json"),
-            r#"{"auth_mode":"apikey","OPENAI_API_KEY":"sk-xxx"}"#,
-        )
-        .unwrap();
-        let (e2, _a2, l2) = read_codex_identity(dir.path());
-        assert!(l2);
-        assert!(e2.is_none());
+    fn codex_data_dir_and_launcher_paths_mirror_claude_naming() {
+        // Codex profiles use the same name-casing as Claude Desktop, just with
+        // the Codex- / "Codex " prefixes (e.g. "work" -> "WORK").
+        let cased = title_case("work");
+        let data = codex_data_dir_for("work").unwrap();
+        assert!(data
+            .to_string_lossy()
+            .contains(&format!("Application Support/Codex-{cased}")));
+        let launcher = codex_launcher_path_for("work").unwrap();
+        assert!(launcher
+            .to_string_lossy()
+            .ends_with(&format!("Applications/Codex {cased}.app")));
     }
 
     #[test]

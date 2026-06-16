@@ -53,18 +53,18 @@ export type CodeInstall = {
   managed: boolean;
 };
 
-/** A Codex (OpenAI CLI) install — the default ~/.codex or a CODEX_HOME profile. */
+/** A Codex Desktop install — the default Codex.app or a managed profile.
+ *  Same shape/mechanism as DesktopInstall (Codex.app is Chromium-based and
+ *  honors --user-data-dir, exactly like Claude Desktop). */
 export type CodexInstall = {
   id: string;
   name: string;
   kind: "default" | "profile";
-  config_dir: string;
-  alias_name: string | null;
+  data_dir: string;
+  app_path: string | null;
+  launcher_path: string | null;
   managed: boolean;
-  /** Logged-in account, decoded from auth.json (best-effort). */
-  account_email: string | null;
-  account_id: string | null;
-  logged_in: boolean;
+  is_running: boolean;
 };
 
 export type CodeProject = {
