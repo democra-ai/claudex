@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
   CodeInstall,
+  CodexInstall,
   CodeProject,
   CopySummary,
   DesktopInstall,
@@ -70,6 +71,14 @@ export const api = {
   // -------- Code profiles --------
   listCodeInstalls(): Promise<CodeInstall[]> {
     return invoke("list_code_installs");
+  },
+
+  listCodexInstalls(): Promise<CodexInstall[]> {
+    return invoke("list_codex_installs");
+  },
+
+  createCodexProfile(name: string, seedFromDefault: boolean): Promise<CodexInstall> {
+    return invoke("create_codex_profile", { name, seedFromDefault });
   },
 
   listCodeHistory(configDir: string): Promise<CodeProject[]> {

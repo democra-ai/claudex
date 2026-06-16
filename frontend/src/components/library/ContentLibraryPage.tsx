@@ -7,6 +7,7 @@ import { cn } from "@/lib/utils";
 import { api, isTauri } from "@/lib/api";
 import { useToasts } from "@/hooks/useToast";
 import type {
+  CodexInstall,
   DesktopInstall,
   LibraryCellChange,
   LibraryKind,
@@ -123,6 +124,7 @@ function SidebarProfileRow({
 
 export default function ContentLibraryPage() {
   const [installs, setInstalls] = useState<DesktopInstall[]>([]);
+  const [codexInstalls, setCodexInstalls] = useState<CodexInstall[]>([]);
   const [visibleIds, setVisibleIds] = useState<Set<string>>(new Set());
   const [activeKind, setActiveKind] = useState<LibraryKind>("code_history");
   const [rowsByKind, setRowsByKind] = useState<
@@ -192,6 +194,9 @@ export default function ContentLibraryPage() {
     }
     setBusy(true);
     try {
+      // Codex installs are an independent dimension — load them alongside but
+      // don't fail the whole refresh if Codex isn't present on this machine.
+      api.listCodexInstalls().then(setCodexInstalls).catch(() => setCodexInstalls([]));
       const list = await api.listDesktopInstalls();
       setInstalls(list);
       setVisibleIds((current) => {
@@ -414,13 +419,14 @@ export default function ContentLibraryPage() {
 
   const [newWantsDesktop, setNewWantsDesktop] = useState(true);
   const [newWantsCode, setNewWantsCode] = useState(true);
+  const [newWantsCodex, setNewWantsCodex] = useState(false);
   const [newSeedCode, setNewSeedCode] = useState(true);
 
   const handleCreate = useCallback(async () => {
     const name = newProfileName.trim();
     if (!name) return;
-    if (!newWantsDesktop && !newWantsCode) {
-      push("Pick at least one of Desktop / Code CLI.", "error");
+    if (!newWantsDesktop && !newWantsCode && !newWantsCodex) {
+      push("Pick at least one of Desktop / Code / Codex.", "error");
       return;
     }
     setBusy(true);
@@ -438,6 +444,10 @@ export default function ContentLibraryPage() {
           }`,
         );
       }
+      if (newWantsCodex) {
+        const created = await api.createCodexProfile(name, newSeedCode);
+        parts.push(`Codex CLI alias ${created.alias_name ?? `codex-${name}`}`);
+      }
       push(`Created: ${parts.join(" + ")}.`, "success");
       setNewProfileName("");
       await loadInstalls();
@@ -450,6 +460,7 @@ export default function ContentLibraryPage() {
     newProfileName,
     newWantsDesktop,
     newWantsCode,
+    newWantsCodex,
     newSeedCode,
     loadInstalls,
     push,
@@ -502,6 +513,46 @@ export default function ContentLibraryPage() {
           </div>
         </div>
 
+        {codexInstalls.length > 0 ? (
+          <div className="mx-2 border-t border-border/60 pt-3">
+            <div className="mb-1.5 flex items-center justify-between px-3 font-sans text-[10px] uppercase tracking-[0.14em] text-muted-foreground/80">
+              <span>Codex accounts</span>
+              <span className="font-mono text-[10px] tabular-nums text-muted-foreground/60">
+                {codexInstalls.length}
+              </span>
+            </div>
+            <div className="space-y-0.5 px-1">
+              {codexInstalls.map((c) => (
+                <div
+                  key={c.id}
+                  className="flex items-center gap-2 rounded-md px-3 py-1.5"
+                  title={c.config_dir}
+                >
+                  <span
+                    className={cn(
+                      "h-1.5 w-1.5 shrink-0 rounded-full",
+                      c.logged_in ? "bg-foreground/60" : "bg-muted-foreground/30",
+                    )}
+                  />
+                  <div className="flex min-w-0 flex-col leading-tight">
+                    <span className="truncate font-sans text-[12px] text-foreground/90">
+                      {c.name}
+                    </span>
+                    <span className="truncate font-mono text-[10px] text-muted-foreground/70">
+                      {c.account_email ?? (c.logged_in ? "signed in" : "not signed in")}
+                    </span>
+                  </div>
+                  {c.alias_name ? (
+                    <span className="ml-auto shrink-0 font-mono text-[9px] text-muted-foreground/50">
+                      {c.alias_name}
+                    </span>
+                  ) : null}
+                </div>
+              ))}
+            </div>
+          </div>
+        ) : null}
+
         <div className="mx-2 mt-auto space-y-2 border-t border-border/60 px-1 pt-3">
           <div className="px-2 font-sans text-[10px] uppercase tracking-[0.14em] text-muted-foreground/80">
             New profile
@@ -549,13 +600,22 @@ export default function ContentLibraryPage() {
             />
             Code CLI alias
           </label>
-          {newWantsCode ? (
+          <label className="flex cursor-pointer items-center gap-2 px-2 font-sans text-[11px] text-foreground/85">
+            <Checkbox
+              checked={newWantsCodex}
+              onCheckedChange={(v) => setNewWantsCodex(v === true)}
+              disabled={busy}
+              className="h-3.5 w-3.5"
+            />
+            Codex CLI alias
+          </label>
+          {newWantsCode || newWantsCodex ? (
             <label
               className={cn(
                 "flex cursor-pointer items-start gap-2 pl-6 pr-2 font-sans text-[10px]",
                 busy ? "text-muted-foreground/50" : "text-muted-foreground",
               )}
-              title="Copy skills, plugins, MCPs from ~/.claude. Excludes chat history and credentials."
+              title="Copy skills, plugins, MCPs from the default config dir. Excludes chat history and credentials."
             >
               <Checkbox
                 checked={newSeedCode}
@@ -563,7 +623,7 @@ export default function ContentLibraryPage() {
                 disabled={busy}
                 className="mt-0.5 h-3 w-3"
               />
-              <span>Seed CLI config from ~/.claude (skills, plugins, MCP)</span>
+              <span>Seed config from default (skills, plugins, MCP)</span>
             </label>
           ) : null}
         </div>

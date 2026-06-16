@@ -53,6 +53,20 @@ export type CodeInstall = {
   managed: boolean;
 };
 
+/** A Codex (OpenAI CLI) install — the default ~/.codex or a CODEX_HOME profile. */
+export type CodexInstall = {
+  id: string;
+  name: string;
+  kind: "default" | "profile";
+  config_dir: string;
+  alias_name: string | null;
+  managed: boolean;
+  /** Logged-in account, decoded from auth.json (best-effort). */
+  account_email: string | null;
+  account_id: string | null;
+  logged_in: boolean;
+};
+
 export type CodeProject = {
   id: string;
   display_path: string;
