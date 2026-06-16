@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Info, Play, Plus } from "lucide-react";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Button } from "@/components/ui/button";
@@ -417,54 +417,52 @@ export default function ContentLibraryPage() {
     [rowsByKind, activeKind],
   );
 
-  const [newWantsDesktop, setNewWantsDesktop] = useState(true);
-  const [newWantsCode, setNewWantsCode] = useState(true);
-  const [newWantsCodex, setNewWantsCodex] = useState(false);
-  const [newSeedCode, setNewSeedCode] = useState(true);
+  // The "+" opens a small menu to pick the profile TYPE. A profile is either
+  // a Claude profile (Desktop launcher + Code CLI alias) or a Codex profile
+  // (CODEX_HOME CLI alias) — each isolates its own login. Seeding from the
+  // matching default config dir is on by default (skills/plugins/MCP only).
+  const [addMenuOpen, setAddMenuOpen] = useState(false);
+  const addMenuRef = useRef<HTMLDivElement | null>(null);
 
-  const handleCreate = useCallback(async () => {
-    const name = newProfileName.trim();
-    if (!name) return;
-    if (!newWantsDesktop && !newWantsCode && !newWantsCodex) {
-      push("Pick at least one of Desktop / Code / Codex.", "error");
-      return;
-    }
-    setBusy(true);
-    try {
-      const parts: string[] = [];
-      if (newWantsDesktop) {
-        const created = await api.createDesktopProfile(name);
-        parts.push(`Desktop launcher (${created.name})`);
+  useEffect(() => {
+    if (!addMenuOpen) return;
+    const onDown = (e: MouseEvent) => {
+      if (addMenuRef.current && !addMenuRef.current.contains(e.target as Node)) {
+        setAddMenuOpen(false);
       }
-      if (newWantsCode) {
-        const created = await api.createCodeProfile(name, newSeedCode);
-        parts.push(
-          `Code CLI alias ${created.alias_name ?? `claude-${name}`}${
-            newSeedCode ? " (seeded)" : ""
-          }`,
-        );
+    };
+    document.addEventListener("mousedown", onDown);
+    return () => document.removeEventListener("mousedown", onDown);
+  }, [addMenuOpen]);
+
+  const handleCreate = useCallback(
+    async (kind: "claude" | "codex") => {
+      const name = newProfileName.trim();
+      if (!name) return;
+      setAddMenuOpen(false);
+      setBusy(true);
+      try {
+        const parts: string[] = [];
+        if (kind === "claude") {
+          const desktop = await api.createDesktopProfile(name);
+          parts.push(`Desktop launcher (${desktop.name})`);
+          const code = await api.createCodeProfile(name, true);
+          parts.push(`Code alias ${code.alias_name ?? `claude-${name}`}`);
+        } else {
+          const codex = await api.createCodexProfile(name, true);
+          parts.push(`Codex alias ${codex.alias_name ?? `codex-${name}`}`);
+        }
+        push(`Created ${kind === "claude" ? "Claude" : "Codex"} profile: ${parts.join(" + ")}.`, "success");
+        setNewProfileName("");
+        await loadInstalls();
+      } catch (e) {
+        push(String(e), "error");
+      } finally {
+        setBusy(false);
       }
-      if (newWantsCodex) {
-        const created = await api.createCodexProfile(name, newSeedCode);
-        parts.push(`Codex CLI alias ${created.alias_name ?? `codex-${name}`}`);
-      }
-      push(`Created: ${parts.join(" + ")}.`, "success");
-      setNewProfileName("");
-      await loadInstalls();
-    } catch (e) {
-      push(String(e), "error");
-    } finally {
-      setBusy(false);
-    }
-  }, [
-    newProfileName,
-    newWantsDesktop,
-    newWantsCode,
-    newWantsCodex,
-    newSeedCode,
-    loadInstalls,
-    push,
-  ]);
+    },
+    [newProfileName, loadInstalls, push],
+  );
 
   const activeRows = rowsByKind[activeKind] ?? [];
   const selectedRowId =
@@ -522,33 +520,43 @@ export default function ContentLibraryPage() {
               </span>
             </div>
             <div className="space-y-0.5 px-1">
-              {codexInstalls.map((c) => (
-                <div
-                  key={c.id}
-                  className="flex items-center gap-2 rounded-md px-3 py-1.5"
-                  title={c.config_dir}
-                >
-                  <span
-                    className={cn(
-                      "h-1.5 w-1.5 shrink-0 rounded-full",
-                      c.logged_in ? "bg-foreground/60" : "bg-muted-foreground/30",
-                    )}
-                  />
-                  <div className="flex min-w-0 flex-col leading-tight">
-                    <span className="truncate font-sans text-[12px] text-foreground/90">
-                      {c.name}
+              {codexInstalls.map((c) => {
+                const runCmd = c.alias_name ?? "codex";
+                return (
+                  <button
+                    key={c.id}
+                    type="button"
+                    onClick={async () => {
+                      try {
+                        await navigator.clipboard.writeText(runCmd);
+                        push(`Copied “${runCmd}” — run it in a terminal to use this account.`, "success");
+                      } catch {
+                        push(`Run “${runCmd}” in a terminal to use this account.`, "info");
+                      }
+                    }}
+                    title={`${c.config_dir}\nClick to copy the run command`}
+                    className="group flex w-full items-center gap-2 rounded-md px-3 py-1.5 text-left hover:bg-muted/60"
+                  >
+                    <span
+                      className={cn(
+                        "h-1.5 w-1.5 shrink-0 rounded-full",
+                        c.logged_in ? "bg-foreground/60" : "bg-muted-foreground/30",
+                      )}
+                    />
+                    <span className="flex min-w-0 flex-col leading-tight">
+                      <span className="truncate font-sans text-[12px] text-foreground/90">
+                        {c.name}
+                      </span>
+                      <span className="truncate font-mono text-[10px] text-muted-foreground/70">
+                        {c.account_email ?? (c.logged_in ? "signed in" : "not signed in")}
+                      </span>
                     </span>
-                    <span className="truncate font-mono text-[10px] text-muted-foreground/70">
-                      {c.account_email ?? (c.logged_in ? "signed in" : "not signed in")}
+                    <span className="ml-auto shrink-0 font-mono text-[9px] text-muted-foreground/50 group-hover:text-primary">
+                      {runCmd}
                     </span>
-                  </div>
-                  {c.alias_name ? (
-                    <span className="ml-auto shrink-0 font-mono text-[9px] text-muted-foreground/50">
-                      {c.alias_name}
-                    </span>
-                  ) : null}
-                </div>
-              ))}
+                  </button>
+                );
+              })}
             </div>
           </div>
         ) : null}
@@ -557,12 +565,15 @@ export default function ContentLibraryPage() {
           <div className="px-2 font-sans text-[10px] uppercase tracking-[0.14em] text-muted-foreground/80">
             New profile
           </div>
-          <div className="flex gap-1">
+          {/* Type the name, then "+" opens a menu to pick the profile TYPE.
+           *  Claude → Desktop launcher + Code alias; Codex → CODEX_HOME alias.
+           *  Each type isolates its own login. */}
+          <div className="relative flex gap-1" ref={addMenuRef}>
             <Input
               value={newProfileName}
               onChange={(e) => setNewProfileName(e.target.value)}
               onKeyDown={(e) => {
-                if (e.key === "Enter") handleCreate();
+                if (e.key === "Enter" && newProfileName.trim()) setAddMenuOpen(true);
               }}
               placeholder="name"
               className="h-7 font-sans text-xs"
@@ -571,61 +582,53 @@ export default function ContentLibraryPage() {
             <Button
               type="button"
               size="icon"
-              onClick={handleCreate}
+              onClick={() => setAddMenuOpen((o) => !o)}
               disabled={busy || !newProfileName.trim()}
               className="h-7 w-7"
-              aria-label="Create profile"
+              aria-label="Add profile"
+              aria-haspopup="menu"
+              aria-expanded={addMenuOpen}
             >
               <Plus className="h-3.5 w-3.5" />
             </Button>
+
+            {addMenuOpen ? (
+              <div
+                role="menu"
+                className="absolute bottom-9 right-0 z-50 w-52 overflow-hidden rounded-md border bg-background shadow-lg"
+              >
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => handleCreate("claude")}
+                  className="flex w-full items-center gap-2.5 px-3 py-2 text-left hover:bg-muted/70"
+                >
+                  <span className="h-2.5 w-2.5 shrink-0 rounded-[3px] bg-primary" />
+                  <span className="flex min-w-0 flex-col leading-tight">
+                    <span className="font-sans text-[12px] text-foreground">Claude profile</span>
+                    <span className="font-sans text-[10px] text-muted-foreground">Desktop launcher + Code alias</span>
+                  </span>
+                </button>
+                <div className="h-px bg-border" />
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => handleCreate("codex")}
+                  className="flex w-full items-center gap-2.5 px-3 py-2 text-left hover:bg-muted/70"
+                >
+                  <span className="h-2.5 w-2.5 shrink-0 rounded-[3px] bg-foreground" />
+                  <span className="flex min-w-0 flex-col leading-tight">
+                    <span className="font-sans text-[12px] text-foreground">Codex profile</span>
+                    <span className="font-sans text-[10px] text-muted-foreground">CODEX_HOME CLI alias</span>
+                  </span>
+                </button>
+              </div>
+            ) : null}
           </div>
-          {/* Two checkboxes — sets up Desktop launcher AND/OR Code CLI alias
-           *  in a single click. If both are on, we run the Desktop and Code
-           *  side back-to-back and combine the success toast. */}
-          <label className="flex cursor-pointer items-center gap-2 px-2 font-sans text-[11px] text-foreground/85">
-            <Checkbox
-              checked={newWantsDesktop}
-              onCheckedChange={(v) => setNewWantsDesktop(v === true)}
-              disabled={busy}
-              className="h-3.5 w-3.5"
-            />
-            Desktop launcher
-          </label>
-          <label className="flex cursor-pointer items-center gap-2 px-2 font-sans text-[11px] text-foreground/85">
-            <Checkbox
-              checked={newWantsCode}
-              onCheckedChange={(v) => setNewWantsCode(v === true)}
-              disabled={busy}
-              className="h-3.5 w-3.5"
-            />
-            Code CLI alias
-          </label>
-          <label className="flex cursor-pointer items-center gap-2 px-2 font-sans text-[11px] text-foreground/85">
-            <Checkbox
-              checked={newWantsCodex}
-              onCheckedChange={(v) => setNewWantsCodex(v === true)}
-              disabled={busy}
-              className="h-3.5 w-3.5"
-            />
-            Codex CLI alias
-          </label>
-          {newWantsCode || newWantsCodex ? (
-            <label
-              className={cn(
-                "flex cursor-pointer items-start gap-2 pl-6 pr-2 font-sans text-[10px]",
-                busy ? "text-muted-foreground/50" : "text-muted-foreground",
-              )}
-              title="Copy skills, plugins, MCPs from the default config dir. Excludes chat history and credentials."
-            >
-              <Checkbox
-                checked={newSeedCode}
-                onCheckedChange={(v) => setNewSeedCode(v === true)}
-                disabled={busy}
-                className="mt-0.5 h-3 w-3"
-              />
-              <span>Seed config from default (skills, plugins, MCP)</span>
-            </label>
-          ) : null}
+          <p className="px-2 font-sans text-[10px] leading-snug text-muted-foreground/70">
+            Seeds skills / plugins / MCP from the matching default config. Chat
+            history and credentials are never copied.
+          </p>
         </div>
       </aside>
 
