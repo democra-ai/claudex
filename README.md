@@ -31,7 +31,8 @@ Each profile keeps its own login, chats, settings, MCP connectors, plugins, and 
 - **Selective sharing** — extensions and skills via live symlinks (edits propagate both ways); MCP servers and preferences via atomic copy-on-apply.
 - **Matrix UI** — every profile × every content item in one grid. Five-state glyphs (■●◐○·) show share status at distance.
 - **Profile detail** — today's tokens, rolling 5h / 7d session counts, pace vs your own baseline, account identities, storage breakdown, sharing graph.
-- **CLI included** — the original interactive wizard is here too: `add`, `list`, `status`, `repair`, `remove`.
+- **Cross-tool import** — bring a Codex session into Claude Code (or vice-versa) as a brand-new, resumable session. `convert codex claude` parses the Codex rollout and writes a fresh `~/.claude/projects/…` transcript you can `claude --resume`. Import, not sync — see [How it works](#how-it-works).
+- **CLI included** — the original interactive wizard is here too: `add`, `list`, `status`, `convert`, `repair`, `remove`.
 
 ## Install
 
@@ -87,6 +88,8 @@ CLI equivalent: `claude-multiprofile add`.
   <img src="docs/assets/share-symlink.svg" alt="Animated illustration of two profile folders; one extension subfolder in 'work' is replaced with a symlink to the same folder in 'default', showing live two-way sharing." width="720">
 </p>
 
+**Cross-tool import.** Claude Code and Codex store conversations in different on-disk formats (Claude: a `parentUuid` DAG of Anthropic-format messages under `projects/`; Codex: a linear log of OpenAI response-items under `sessions/`). They can't be losslessly synced — threading models differ and each tool's reasoning payloads are provider-private. So `convert` does the pragmatic thing: it reads the source session through a shared intermediate representation and **writes a new session in the target tool's format** (preserving text, tool calls, and tool results; dropping crypto reasoning and flattening branches). Codex→Claude is clean (Claude indexes from JSONL); Claude→Codex is best-effort (Codex also keeps a SQLite index its picker reads — for that direction, Codex 0.139.0+'s official `/import` is preferred).
+
 ## The matrix
 
 Rows are content items, columns are the profiles you've checked. Each cell encodes share state as both a glyph and a color (legible at distance and for colorblind users):
@@ -106,6 +109,7 @@ claude-multiprofile add            # interactive wizard (Desktop, Code, or both)
 claude-multiprofile list           # configured profiles + paths
 claude-multiprofile status         # health-check directories, .apps, aliases
 claude-multiprofile extensions <p> # multi-select copy Desktop extensions
+claude-multiprofile convert <f> <t> [s]  # import a session between claude<->codex
 claude-multiprofile repair <p>     # re-register macOS launcher (icon-cache fix)
 claude-multiprofile remove <p>     # tear down a profile (data kept by default)
 claude-multiprofile upgrade        # pull latest from GitHub

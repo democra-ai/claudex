@@ -1,6 +1,6 @@
 {
   "name": "claude-multiprofile",
-  "version": "0.1.9",
+  "version": "0.2.0",
   "description": "Run multiple Claude Desktop and Claude Code accounts side by side on macOS, fully isolated.",
   "type": "module",
   "bin": {
@@ -15,7 +15,7 @@
   ],
   "scripts": {
     "start": "node ./bin/claude-multiprofile.js",
-    "test": "node --test test/unit.test.js",
+    "test": "node --test",
     "frontend:install": "npm --prefix frontend install",
     "frontend:dev": "npm --prefix frontend run dev",
     "frontend:build": "npm --prefix frontend run build",
