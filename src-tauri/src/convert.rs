@@ -609,9 +609,13 @@ fn resolve_claude_session(needle: &str, claude_home: &Path) -> Option<PathBuf> {
 // High-level — the two Tauri-facing entry points
 // ---------------------------------------------------------------------------
 
-pub fn import_codex_session_to_claude(source: String) -> Result<ImportResult, String> {
-    let file = resolve_codex_session(&source, &default_codex_home())
-        .ok_or_else(|| format!("No Codex session found for: {}", if source.is_empty() { "(latest)" } else { &source }))?;
+/// Import a Codex session that lives in a SPECIFIC codex_home (per-profile).
+pub fn import_codex_session_to_claude_in(
+    source: &str,
+    codex_home: &Path,
+) -> Result<ImportResult, String> {
+    let file = resolve_codex_session(source, codex_home)
+        .ok_or_else(|| format!("No Codex session found for: {}", if source.is_empty() { "(latest)" } else { source }))?;
     let ir = parse_codex_rollout(&file);
     if ir.turns.is_empty() {
         return Err(format!("Codex session has no convertible turns: {}", file.display()));
@@ -619,6 +623,14 @@ pub fn import_codex_session_to_claude(source: String) -> Result<ImportResult, St
     let (path, session_id, turns) = emit_claude_session(&ir, &default_claude_home())?;
     let cwd = if ir.cwd.is_empty() { home().to_string_lossy().to_string() } else { ir.cwd };
     Ok(ImportResult { from: file.to_string_lossy().to_string(), path, session_id, cwd, turns, picker: None })
+}
+
+/// Convenience: import from the default ~/.codex. The GUI routes through
+/// `lib::import_codex_session_to_claude_any_home` (searches every profile home);
+/// this single-home entry is kept for symmetry with the reverse direction.
+#[allow(dead_code)]
+pub fn import_codex_session_to_claude(source: String) -> Result<ImportResult, String> {
+    import_codex_session_to_claude_in(&source, &default_codex_home())
 }
 
 pub fn import_claude_session_to_codex(source: String) -> Result<ImportResult, String> {

@@ -4213,132 +4213,334 @@ fn codex_config_path() -> Result<PathBuf, String> {
     Ok(codex_home_dir()?.join("config.toml"))
 }
 
-/// A single-column browse row for the Codex tab.
-fn codex_browse_row(
+/// One Codex profile = one matrix column. `home` is the profile's CODEX_HOME
+/// (default install → ~/.codex; managed → ~/.codex-<name>). `id` matches the
+/// CodexInstall id ("default" / "profile:<name>") so the frontend columns line
+/// up with the cells.
+struct CodexCol {
     id: String,
     label: String,
-    detail: Option<String>,
-    present: bool,
-    group: &str,
-) -> LibraryRow {
-    LibraryRow {
-        id,
-        label,
-        description: detail.clone(),
-        cells: vec![LibraryCell {
-            install_id: CODEX_SKILLS_GLOBAL_ID.to_string(),
-            install_name: "Codex".to_string(),
-            data_dir: String::new(),
-            kind: "codex".to_string(),
-            state: if present { "independent".to_string() } else { "absent".to_string() },
-            present,
-            detail,
-            digest: None,
-            link_target_digest: None,
-        }],
-        interactive: false,
-        group: Some(group.to_string()),
+    kind: String,
+    home: PathBuf,
+}
+
+/// All Codex profiles as matrix columns — the default ~/.codex always first,
+/// then every managed Codex profile in the registry. Now that each profile has
+/// its own CODEX_HOME, sessions/skills/MCPs are per-profile, and skills/MCPs can
+/// be shared BETWEEN Codex profiles (parallel to the Claude tab).
+fn codex_profile_columns() -> Result<Vec<CodexCol>, String> {
+    let mut cols = vec![CodexCol {
+        id: "default".to_string(),
+        label: "Default".to_string(),
+        kind: "default".to_string(),
+        home: codex_home_dir()?,
+    }];
+    let registry = load_registry()?;
+    for p in &registry.profiles {
+        if p.codex.is_some() {
+            cols.push(CodexCol {
+                id: format!("profile:{}", p.name),
+                label: p.name.clone(),
+                kind: "profile".to_string(),
+                home: codex_home_dir_for(&p.name)?,
+            });
+        }
     }
+    Ok(cols)
 }
 
-/// Codex sessions: rows from session_index.jsonl (id, thread_name, updated_at),
-/// newest first. The per-row import action lives in the frontend.
+/// Resolve a Codex column id ("default" / "profile:<name>") to its CODEX_HOME.
+fn codex_home_for_column(id: &str) -> Result<Option<PathBuf>, String> {
+    Ok(codex_profile_columns()?.into_iter().find(|c| c.id == id).map(|c| c.home))
+}
+
+/// Import a Codex session by id, searching EVERY Codex profile home — a session
+/// now lives in whichever account created it (~/.codex or ~/.codex-<name>).
+pub fn import_codex_session_to_claude_any_home(
+    source: String,
+) -> Result<convert::ImportResult, String> {
+    let cols = codex_profile_columns()?;
+    let mut last_err: Option<String> = None;
+    for col in &cols {
+        match convert::import_codex_session_to_claude_in(&source, &col.home) {
+            Ok(r) => return Ok(r),
+            Err(e) => last_err = Some(e),
+        }
+    }
+    Err(last_err.unwrap_or_else(|| "No Codex session found.".to_string()))
+}
+
+/// Codex sessions: one row per session, present only in its OWNING profile's
+/// column (sessions don't cross accounts). Browse-only; the import action
+/// (frontend) resolves the session across every profile home.
 pub fn list_codex_sessions_library() -> Result<Vec<LibraryRow>, String> {
-    let idx = codex_home_dir()?.join("session_index.jsonl");
-    let raw = match fs::read_to_string(&idx) {
-        Ok(r) => r,
-        Err(_) => return Ok(Vec::new()),
-    };
-    let mut entries: Vec<(String, String, String)> = raw
-        .lines()
-        .filter(|l| !l.trim().is_empty())
-        .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
-        .map(|v| {
-            let id = v.get("id").and_then(|x| x.as_str()).unwrap_or("").to_string();
-            let name = v
-                .get("thread_name")
-                .and_then(|x| x.as_str())
-                .filter(|s| !s.is_empty())
-                .unwrap_or("(untitled)")
-                .to_string();
-            let upd = v.get("updated_at").and_then(|x| x.as_str()).unwrap_or("").to_string();
-            (id, name, upd)
-        })
-        .filter(|(id, _, _)| !id.is_empty())
-        .collect();
-    // newest first
-    entries.sort_by(|a, b| b.2.cmp(&a.2));
-    Ok(entries
-        .into_iter()
-        .map(|(id, name, upd)| {
-            let detail = if upd.len() >= 10 { Some(format!("updated {}", &upd[..10])) } else { None };
-            codex_browse_row(id, name, detail, true, "Codex sessions")
-        })
-        .collect())
+    let cols = codex_profile_columns()?;
+    let mut rows = Vec::new();
+    for (owner_idx, col) in cols.iter().enumerate() {
+        let idx = col.home.join("session_index.jsonl");
+        let raw = match fs::read_to_string(&idx) {
+            Ok(r) => r,
+            Err(_) => continue,
+        };
+        let mut entries: Vec<(String, String, String)> = raw
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+            .map(|v| {
+                let id = v.get("id").and_then(|x| x.as_str()).unwrap_or("").to_string();
+                let name = v
+                    .get("thread_name")
+                    .and_then(|x| x.as_str())
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or("(untitled)")
+                    .to_string();
+                let upd = v.get("updated_at").and_then(|x| x.as_str()).unwrap_or("").to_string();
+                (id, name, upd)
+            })
+            .filter(|(id, _, _)| !id.is_empty())
+            .collect();
+        entries.sort_by(|a, b| b.2.cmp(&a.2)); // newest first
+        for (id, name, upd) in entries {
+            let detail = if upd.len() >= 10 {
+                Some(format!("updated {}", &upd[..10]))
+            } else {
+                None
+            };
+            let cells = cols
+                .iter()
+                .enumerate()
+                .map(|(ci, c)| {
+                    let present = ci == owner_idx;
+                    LibraryCell {
+                        install_id: c.id.clone(),
+                        install_name: c.label.clone(),
+                        data_dir: c.home.join("sessions").to_string_lossy().to_string(),
+                        kind: c.kind.clone(),
+                        state: if present { "independent".into() } else { "absent".into() },
+                        present,
+                        detail: if present { detail.clone() } else { None },
+                        digest: None,
+                        link_target_digest: None,
+                    }
+                })
+                .collect();
+            rows.push(LibraryRow {
+                id,
+                label: name,
+                description: detail,
+                cells,
+                interactive: false,
+                group: Some("Codex sessions".into()),
+            });
+        }
+    }
+    Ok(rows)
 }
 
-/// Codex skills: the SKILL.md dirs in ~/.codex/skills, flagged linked-from-
-/// Claude (a symlink) vs Codex-native.
+/// Codex skills: per-profile <home>/skills dirs. Shareable BETWEEN Codex
+/// profiles via symlink (same model as Claude skills).
 pub fn list_codex_skills_library() -> Result<Vec<LibraryRow>, String> {
-    let dir = codex_skills_dir()?;
-    let mut rows = Vec::new();
-    if let Ok(rd) = fs::read_dir(&dir) {
-        let mut names: Vec<(String, bool)> = rd
-            .flatten()
-            .filter_map(|e| {
+    let cols = codex_profile_columns()?;
+    let mut names: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for col in &cols {
+        let dir = col.home.join(SKILLS_SUBDIR);
+        if let Ok(rd) = fs::read_dir(&dir) {
+            for e in rd.flatten() {
                 let n = e.file_name().to_string_lossy().to_string();
                 if n.starts_with('.') {
-                    return None;
+                    continue;
                 }
                 let is_link = fs::symlink_metadata(e.path())
                     .map(|m| m.file_type().is_symlink())
                     .unwrap_or(false);
                 if e.path().is_dir() || is_link {
-                    Some((n, is_link))
-                } else {
-                    None
+                    names.insert(n);
+                }
+            }
+        }
+    }
+    let mut rows = Vec::new();
+    for name in names {
+        let cells = cols
+            .iter()
+            .map(|col| {
+                let dir = col.home.join(SKILLS_SUBDIR);
+                let p = dir.join(&name);
+                let present = p.is_dir()
+                    || fs::symlink_metadata(&p)
+                        .map(|m| m.file_type().is_symlink())
+                        .unwrap_or(false);
+                LibraryCell {
+                    install_id: col.id.clone(),
+                    install_name: col.label.clone(),
+                    data_dir: dir.to_string_lossy().to_string(),
+                    kind: col.kind.clone(),
+                    state: String::new(),
+                    present,
+                    detail: None,
+                    digest: None,
+                    link_target_digest: symlink_target_digest(&p),
                 }
             })
             .collect();
-        names.sort();
-        for (n, is_link) in names {
-            let detail = Some(if is_link { "linked from Claude".to_string() } else { "Codex-native".to_string() });
-            rows.push(codex_browse_row(n.clone(), n, detail, true, "Codex skills"));
-        }
+        let mut row = LibraryRow {
+            id: name.clone(),
+            label: name,
+            description: None,
+            cells,
+            interactive: true,
+            group: Some("Codex skills".into()),
+        };
+        compute_row_states(&mut row, true);
+        rows.push(row);
     }
     Ok(rows)
 }
 
-/// Codex MCP: the [mcp_servers.<name>] tables in ~/.codex/config.toml.
+/// Codex MCP: per-profile config.toml [mcp_servers]. Shareable BETWEEN Codex
+/// profiles via copy-with-transform (copy semantics, like cross-tool MCP).
 pub fn list_codex_mcp_library() -> Result<Vec<LibraryRow>, String> {
-    let path = codex_config_path()?;
-    let raw = match fs::read_to_string(&path) {
-        Ok(r) => r,
-        Err(_) => return Ok(Vec::new()),
-    };
-    let doc: toml_edit::ImDocument<String> = match raw.parse() {
-        Ok(d) => d,
-        Err(_) => return Ok(Vec::new()),
-    };
+    let cols = codex_profile_columns()?;
+    let maps: Vec<BTreeMap<String, serde_json::Value>> = cols
+        .iter()
+        .map(|c| read_codex_mcp_at(&c.home.join("config.toml")))
+        .collect();
+    let mut names: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for m in &maps {
+        names.extend(m.keys().cloned());
+    }
     let mut rows = Vec::new();
-    if let Some(servers) = doc.get("mcp_servers").and_then(|i| i.as_table()) {
-        let mut names: Vec<String> = servers.iter().map(|(k, _)| k.to_string()).collect();
-        names.sort();
-        for name in names {
-            if let Some(item) = servers.get(&name) {
-                let cmd = item.get("command").and_then(|v| v.as_str()).unwrap_or("");
-                let arg0 = item
-                    .get("args")
-                    .and_then(|v| v.as_array())
-                    .and_then(|a| a.get(0))
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
-                let detail = Some(format!("{cmd} {arg0}").trim().to_string());
-                rows.push(codex_browse_row(name.clone(), name, detail, true, "Codex MCP"));
-            }
-        }
+    for name in names {
+        let cells = cols
+            .iter()
+            .enumerate()
+            .map(|(ci, col)| {
+                let server = maps[ci].get(&name);
+                LibraryCell {
+                    install_id: col.id.clone(),
+                    install_name: col.label.clone(),
+                    data_dir: col.home.join("config.toml").to_string_lossy().to_string(),
+                    kind: col.kind.clone(),
+                    state: String::new(),
+                    present: server.is_some(),
+                    detail: server.map(mcp_summary),
+                    digest: server.map(mcp_value_digest),
+                    link_target_digest: None,
+                }
+            })
+            .collect();
+        let mut row = LibraryRow {
+            id: name.clone(),
+            label: name,
+            description: None,
+            cells,
+            interactive: true,
+            group: Some("Codex MCP".into()),
+        };
+        compute_row_states(&mut row, false);
+        rows.push(row);
     }
     Ok(rows)
+}
+
+/// Share a skill BETWEEN two Codex profiles by symlinking it into the target's
+/// <home>/skills. Non-destructive: refuses to clobber a real folder / foreign
+/// symlink (mirrors apply_skill_share for the cross-tool case).
+fn apply_codex_skill_share(change: &LibraryCellChange) -> Result<bool, String> {
+    let name = &change.row_id;
+    let target_home = codex_home_for_column(&change.target_install_id)?
+        .ok_or_else(|| format!("Unknown Codex profile: {}", change.target_install_id))?;
+    let target_dir = target_home.join(SKILLS_SUBDIR);
+    let target_link = target_dir.join(name);
+
+    if change.wants {
+        let source_home = if let Some(src) = &change.source_install_id {
+            codex_home_for_column(src)?.ok_or_else(|| format!("Unknown source: {src}"))?
+        } else {
+            let rows = list_codex_skills_library()?;
+            let row = rows
+                .into_iter()
+                .find(|r| r.id == *name)
+                .ok_or_else(|| format!("Skill {name} not found"))?;
+            let src_id = row
+                .cells
+                .iter()
+                .find(|c| c.install_id != change.target_install_id && c.present)
+                .ok_or_else(|| "No Codex profile holds this skill to share from.".to_string())?
+                .install_id
+                .clone();
+            codex_home_for_column(&src_id)?.ok_or_else(|| "Source resolution failed".to_string())?
+        };
+        let source_path = source_home.join(SKILLS_SUBDIR).join(name);
+        if !source_path.is_dir() && fs::symlink_metadata(&source_path).is_err() {
+            return Err(format!("Source skill \"{name}\" doesn't exist."));
+        }
+        if path_points_to(&target_link, &source_path) {
+            return Ok(false);
+        }
+        if fs::symlink_metadata(&target_link).is_ok() {
+            return Err(format!(
+                "\"{name}\" already exists in the target and isn't a Claudex link — remove it there first."
+            ));
+        }
+        fs::create_dir_all(&target_dir).map_err(|e| format!("Create {}: {e}", target_dir.display()))?;
+        symlink_path(&source_path, &target_link)?;
+        Ok(true)
+    } else {
+        match fs::symlink_metadata(&target_link) {
+            Ok(meta) if meta.file_type().is_symlink() => {
+                remove_path(&target_link)?;
+                Ok(true)
+            }
+            Ok(_) => Err(format!(
+                "\"{name}\" in the target is a real folder, not a Claudex link — leaving it untouched."
+            )),
+            Err(_) => Ok(false),
+        }
+    }
+}
+
+/// Copy an MCP server BETWEEN two Codex profiles' config.toml. Copy semantics
+/// with collision-refuse (different config) and no-op (identical).
+fn apply_codex_mcp_share(change: &LibraryCellChange) -> Result<bool, String> {
+    let name = &change.row_id;
+    let target_home = codex_home_for_column(&change.target_install_id)?
+        .ok_or_else(|| format!("Unknown Codex profile: {}", change.target_install_id))?;
+    let target_config = target_home.join("config.toml");
+
+    if change.wants {
+        let source_home = if let Some(src) = &change.source_install_id {
+            codex_home_for_column(src)?.ok_or_else(|| format!("Unknown source: {src}"))?
+        } else {
+            let mut found = None;
+            for c in codex_profile_columns()? {
+                if c.id == change.target_install_id {
+                    continue;
+                }
+                if read_codex_mcp_at(&c.home.join("config.toml")).contains_key(name) {
+                    found = Some(c.home);
+                    break;
+                }
+            }
+            found.ok_or_else(|| "No Codex profile holds this MCP server to copy from.".to_string())?
+        };
+        let server = read_codex_mcp_at(&source_home.join("config.toml"))
+            .get(name)
+            .cloned()
+            .ok_or_else(|| format!("\"{name}\" isn't defined in the source profile."))?;
+        if let Some(existing) = read_codex_mcp_at(&target_config).get(name) {
+            if mcp_value_digest(existing) == mcp_value_digest(&server) {
+                return Ok(false);
+            }
+            return Err(format!(
+                "\"{name}\" already exists in the target with a different config — remove it there first."
+            ));
+        }
+        write_codex_mcp_server_at(&target_config, name, &server)?;
+        Ok(true)
+    } else {
+        remove_codex_mcp_server_at(&target_config, name)
+    }
 }
 
 // ===========================================================================
@@ -4553,14 +4755,12 @@ fn read_claude_code_mcp() -> BTreeMap<String, serde_json::Value> {
     out
 }
 
-/// Read Codex's stdio MCP servers (name -> JSON config, transformed from TOML).
-fn read_codex_mcp() -> BTreeMap<String, serde_json::Value> {
+/// Read stdio MCP servers (name -> JSON config, transformed from TOML) from a
+/// specific Codex config.toml. Used for both the default ~/.codex and each
+/// managed profile's ~/.codex-<name>.
+fn read_codex_mcp_at(path: &Path) -> BTreeMap<String, serde_json::Value> {
     let mut out = BTreeMap::new();
-    let path = match codex_config_path() {
-        Ok(p) => p,
-        Err(_) => return out,
-    };
-    let raw = match fs::read_to_string(&path) {
+    let raw = match fs::read_to_string(path) {
         Ok(r) => r,
         Err(_) => return out,
     };
@@ -4577,6 +4777,14 @@ fn read_codex_mcp() -> BTreeMap<String, serde_json::Value> {
         }
     }
     out
+}
+
+/// The default ~/.codex MCP servers (cross-tool Claude<->Codex sharing).
+fn read_codex_mcp() -> BTreeMap<String, serde_json::Value> {
+    match codex_config_path() {
+        Ok(p) => read_codex_mcp_at(&p),
+        Err(_) => BTreeMap::new(),
+    }
 }
 
 fn mcp_cross_cell(
@@ -4679,12 +4887,15 @@ fn remove_claude_code_mcp_server(name: &str) -> Result<bool, String> {
     Ok(removed)
 }
 
-fn write_codex_mcp_server(name: &str, server: &serde_json::Value) -> Result<(), String> {
-    let path = codex_config_path()?;
-    let raw = fs::read_to_string(&path).unwrap_or_default();
+fn write_codex_mcp_server_at(
+    path: &Path,
+    name: &str,
+    server: &serde_json::Value,
+) -> Result<(), String> {
+    let raw = fs::read_to_string(path).unwrap_or_default();
     let mut doc: toml_edit::DocumentMut = raw
         .parse()
-        .map_err(|e| format!("Parse ~/.codex/config.toml: {e}"))?;
+        .map_err(|e| format!("Parse {}: {e}", path.display()))?;
     if doc.get("mcp_servers").is_none() {
         let mut t = toml_edit::Table::new();
         t.set_implicit(true);
@@ -4697,27 +4908,34 @@ fn write_codex_mcp_server(name: &str, server: &serde_json::Value) -> Result<(), 
         .as_object()
         .ok_or_else(|| "MCP server config is not an object.".to_string())?;
     servers.insert(name, toml_edit::Item::Table(json_object_to_toml_table(obj)));
-    write_string_atomically(&path, &doc.to_string())
+    write_string_atomically(path, &doc.to_string())
 }
 
-fn remove_codex_mcp_server(name: &str) -> Result<bool, String> {
-    let path = codex_config_path()?;
-    let raw = match fs::read_to_string(&path) {
+fn write_codex_mcp_server(name: &str, server: &serde_json::Value) -> Result<(), String> {
+    write_codex_mcp_server_at(&codex_config_path()?, name, server)
+}
+
+fn remove_codex_mcp_server_at(path: &Path, name: &str) -> Result<bool, String> {
+    let raw = match fs::read_to_string(path) {
         Ok(r) => r,
         Err(_) => return Ok(false),
     };
     let mut doc: toml_edit::DocumentMut = raw
         .parse()
-        .map_err(|e| format!("Parse ~/.codex/config.toml: {e}"))?;
+        .map_err(|e| format!("Parse {}: {e}", path.display()))?;
     let removed = doc
         .get_mut("mcp_servers")
         .and_then(|i| i.as_table_mut())
         .map(|t| t.remove(name).is_some())
         .unwrap_or(false);
     if removed {
-        write_string_atomically(&path, &doc.to_string())?;
+        write_string_atomically(path, &doc.to_string())?;
     }
     Ok(removed)
+}
+
+fn remove_codex_mcp_server(name: &str) -> Result<bool, String> {
+    remove_codex_mcp_server_at(&codex_config_path()?, name)
 }
 
 /// Apply a cross-tool MCP toggle. wants=true copies the server FROM the other
@@ -4781,6 +4999,12 @@ pub fn apply_library_change(
     }
     if kind == "mcp_cross" {
         return apply_mcp_cross_share(&change);
+    }
+    if kind == "codex_skills" {
+        return apply_codex_skill_share(&change);
+    }
+    if kind == "codex_mcp" {
+        return apply_codex_mcp_share(&change);
     }
     let installs = list_desktop_installs()?;
     let target = installs
@@ -5942,7 +6166,7 @@ mod commands {
     pub fn import_codex_session_to_claude(
         source: String,
     ) -> Result<super::convert::ImportResult, String> {
-        super::convert::import_codex_session_to_claude(source)
+        super::import_codex_session_to_claude_any_home(source)
     }
 
     #[tauri::command]
@@ -7438,6 +7662,38 @@ mod tests {
         );
         assert_eq!(back["command"], serde_json::json!("npx"));
         assert_eq!(back["env"]["API_KEY"], serde_json::json!("abc123"));
+    }
+
+    #[test]
+    fn codex_mcp_write_read_remove_at_explicit_path_roundtrips() {
+        // The core of between-Codex-profile MCP sharing: copy a server into a
+        // target profile's config.toml, read it back digest-stable, remove it.
+        let home = tempfile::tempdir().unwrap();
+        let cfg = home.path().join("config.toml");
+        // Pre-existing unrelated content must survive.
+        fs::write(&cfg, "model = \"gpt-5\"\n").unwrap();
+        let server = serde_json::json!({
+            "command": "npx",
+            "args": ["-y", "some-mcp"],
+            "env": { "TOKEN": "x" }
+        });
+
+        write_codex_mcp_server_at(&cfg, "srv", &server).unwrap();
+        let back = read_codex_mcp_at(&cfg);
+        assert!(back.contains_key("srv"));
+        assert_eq!(
+            mcp_value_digest(&server),
+            mcp_value_digest(&back["srv"]),
+            "copied server must be digest-stable across the TOML round-trip"
+        );
+        let raw = fs::read_to_string(&cfg).unwrap();
+        assert!(raw.contains("model = \"gpt-5\""), "unrelated keys preserved");
+        assert!(raw.contains("[mcp_servers.srv.env]"));
+
+        assert!(remove_codex_mcp_server_at(&cfg, "srv").unwrap());
+        assert!(!read_codex_mcp_at(&cfg).contains_key("srv"));
+        // Removing a missing server is a no-op (false), not an error.
+        assert!(!remove_codex_mcp_server_at(&cfg, "srv").unwrap());
     }
 
     #[test]

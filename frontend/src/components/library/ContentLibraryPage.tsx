@@ -165,11 +165,11 @@ const KIND_SCOPE_CAPTION: Partial<Record<LibraryKind, string>> = {
   cowork_sessions: "Claude-only content.",
   preferences: "Claude-only content.",
   codex_sessions:
-    "Sessions from the default Codex home (~/.codex). Managed profiles keep their own ~/.codex-<name>. Select one to import it into Claude Code.",
+    "One column per Codex account — each session lives in the account that made it. Select one to import it into Claude Code.",
   codex_skills:
-    "Skills in the default Codex home (~/.codex/skills). Share across tools from the Share tab.",
+    "Skills per Codex account (~/.codex-<name>/skills). Toggle a cell to share a skill between accounts (live symlink).",
   codex_mcp:
-    "MCP servers from the default Codex config (~/.codex/config.toml, TOML).",
+    "MCP servers per Codex account (config.toml). Toggle a cell to copy a server between accounts.",
 };
 
 /** Synthetic DesktopInstall-shaped column for the global Codex library. Codex
@@ -425,8 +425,37 @@ export default function ContentLibraryPage() {
   // Desktop-profile columns the other kinds use. We feed the Matrix synthetic
   // DesktopInstall-shaped columns whose ids match the backend cell ids.
   const matrixColumns = useMemo<DesktopInstall[]>(() => {
-    // Codex-private kinds: one global ~/.codex column.
-    if (CODEX_KINDS.includes(activeKind)) return [CODEX_GLOBAL_COLUMN];
+    // Codex-private kinds: one column per Codex profile (each its own
+    // ~/.codex-<name>). Cells line up by CodexInstall id ("default" /
+    // "profile:<name>").
+    if (CODEX_KINDS.includes(activeKind)) {
+      // The backend always emits a "default" (~/.codex) column even if Codex.app
+      // isn't installed; mirror that (id "default") so its cells always have a
+      // matching column.
+      if (codexInstalls.length === 0)
+        return [
+          {
+            id: "default",
+            name: "Default",
+            kind: "default",
+            data_dir: "~/.codex",
+            app_path: null,
+            launcher_path: null,
+            managed: false,
+            is_running: false,
+          },
+        ];
+      return codexInstalls.map((c) => ({
+        id: c.id,
+        name: c.kind === "default" ? "Default" : c.name,
+        kind: c.kind,
+        data_dir: c.data_dir,
+        app_path: null,
+        launcher_path: null,
+        managed: c.managed,
+        is_running: c.is_running,
+      }));
+    }
     // Cross-tool MCP: Claude Code + Codex, copy-mode.
     if (activeKind === "mcp_cross") return [CLAUDE_CODE_MCP_COLUMN, CODEX_GLOBAL_COLUMN];
     if (activeKind !== "skills") return visibleProfiles;
@@ -442,7 +471,7 @@ export default function ContentLibraryPage() {
       is_running: false,
     }));
     return [...claudeCols, CODEX_GLOBAL_COLUMN];
-  }, [activeKind, visibleProfiles, codeInstalls]);
+  }, [activeKind, visibleProfiles, codeInstalls, codexInstalls]);
 
   const counts = useMemo(() => {
     const out: Partial<
