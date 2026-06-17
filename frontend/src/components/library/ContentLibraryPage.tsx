@@ -19,6 +19,7 @@ import { Matrix } from "./Matrix";
 import { DetailSheet, type Selection } from "./DetailSheet";
 import { PendingBar } from "./PendingBar";
 import { DeleteProfileButton } from "./DeleteProfileButton";
+import { ClaudeMark, CodexMark } from "./PlatformMarks";
 
 /**
  * A walled-off profile world (Claude / Codex). Each region owns a tinted
@@ -288,11 +289,20 @@ function SegmentedTabs({
   value: WorkTab;
   onChange: (t: WorkTab) => void;
 }) {
-  const tabs: { id: WorkTab; label: string; accent: string }[] = [
-    { id: "claude", label: "Claude", accent: "bg-primary" },
-    { id: "codex", label: "Codex", accent: "bg-foreground" },
-    { id: "share", label: "Share", accent: "" },
+  const tabs: { id: WorkTab; label: string }[] = [
+    { id: "claude", label: "Claude" },
+    { id: "codex", label: "Codex" },
+    { id: "share", label: "Share" },
   ];
+  const icon = (id: WorkTab, active: boolean) => {
+    if (id === "claude")
+      return <ClaudeMark className={cn("h-3.5 w-3.5", active ? "text-primary" : "")} />;
+    if (id === "codex")
+      return (
+        <CodexMark className={cn("h-3 w-3", active ? "text-[#4366F2]" : "")} />
+      );
+    return <Share2 className="h-3 w-3" />;
+  };
   return (
     <div className="grid grid-cols-3 gap-0.5 rounded-lg bg-muted/60 p-0.5">
       {tabs.map((t) => {
@@ -309,11 +319,7 @@ function SegmentedTabs({
                 : "text-muted-foreground hover:text-foreground",
             )}
           >
-            {t.accent ? (
-              <span className={cn("h-2 w-2 rounded-[2px]", t.accent)} />
-            ) : (
-              <Share2 className="h-3 w-3" />
-            )}
+            {icon(t.id, active)}
             {t.label}
           </button>
         );
@@ -952,14 +958,55 @@ export default function ContentLibraryPage() {
         ) : null}
 
         {activeTab === "codex" ? (
-          <div className="flex flex-1 flex-col items-center justify-center gap-2 text-center text-muted-foreground">
-            <span className="h-3 w-3 rounded-[3px] bg-foreground" />
-            <p className="font-sans text-sm">Codex — launch & login management.</p>
-            <p className="max-w-xs font-sans text-[12px] text-muted-foreground/70">
-              Add, launch, or delete Codex profiles on the left. Codex shares one
-              global skills library — manage it in the <b>Share</b> tab.
-            </p>
-          </div>
+          (() => {
+            const codexSkills: { name: string; state: string }[] = (
+              rowsByKind["skills"] ?? []
+            ).flatMap((r) => {
+              const cell = r.cells.find((c) => c.install_id === "codex:global");
+              return cell?.present ? [{ name: r.label, state: String(cell.state) }] : [];
+            });
+            return (
+              <div className="flex min-h-0 flex-1 flex-col">
+                <div className="mb-2 flex items-center gap-2 rounded-md border border-border/60 bg-muted/30 px-3 py-1.5 font-sans text-[11px] text-muted-foreground">
+                  <CodexMark className="h-3 w-3 text-[#4366F2]" />
+                  Codex skills (~/.codex/skills) — global, shared by all Codex
+                  profiles. Manage cross-tool sharing in the Share tab.
+                </div>
+                <div className="min-h-0 flex-1 overflow-y-auto rounded-md border border-border/60">
+                  <div className="border-b bg-card/40 px-4 py-2 font-sans text-[11px] uppercase tracking-[0.12em] text-muted-foreground/80">
+                    Skills in Codex · {codexSkills.length}
+                  </div>
+                  {codexSkills.length === 0 ? (
+                    <p className="px-4 py-6 text-center font-sans text-[12px] text-muted-foreground/70">
+                      No skills in ~/.codex/skills yet. Share one from the Share tab.
+                    </p>
+                  ) : (
+                    <ul className="divide-y divide-border/40">
+                      {codexSkills.map((s) => (
+                        <li key={s.name} className="flex items-center justify-between px-4 py-2">
+                          <span className="truncate font-sans text-[13px] text-foreground/90">{s.name}</span>
+                          <span
+                            className={cn(
+                              "shrink-0 rounded-full px-2 py-0.5 font-sans text-[9px] uppercase tracking-wider",
+                              s.state === "shared"
+                                ? "bg-primary/15 text-primary"
+                                : "bg-muted text-muted-foreground",
+                            )}
+                          >
+                            {s.state === "shared" ? "linked from Claude" : "Codex-native"}
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+                <p className="mt-2 px-1 font-sans text-[10px] text-muted-foreground/60">
+                  Sessions &amp; login live in each Codex profile's own data dir
+                  (Chromium-private) — manage profiles on the left.
+                </p>
+              </div>
+            );
+          })()
         ) : (
           <>
             {KIND_SCOPE_CAPTION[activeKind] ? (
