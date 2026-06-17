@@ -4337,6 +4337,33 @@ pub fn list_codex_sessions_library() -> Result<Vec<LibraryRow>, String> {
     Ok(rows)
 }
 
+/// Per-skill share states for the Codex matrix. A cell is "shared" when it is
+/// in a symlink relationship with another PRESENT column — either it links INTO
+/// another column's skill (target side) or another column links into IT (real
+/// source side). Bidirectional, unlike compute_row_states' symlink mode, whose
+/// ">=2 cells with the same link digest" rule never fires for the real-source +
+/// single-symlink topology that apply_codex_skill_share actually creates.
+fn codex_skill_share_states(paths: &[PathBuf], present: &[bool]) -> Vec<&'static str> {
+    (0..paths.len())
+        .map(|i| {
+            if !present[i] {
+                return "absent";
+            }
+            let linked = (0..paths.len()).any(|j| {
+                j != i
+                    && present[j]
+                    && (path_points_to(&paths[i], &paths[j])
+                        || path_points_to(&paths[j], &paths[i]))
+            });
+            if linked {
+                "shared"
+            } else {
+                "independent"
+            }
+        })
+        .collect()
+}
+
 /// Codex skills: per-profile <home>/skills dirs. Shareable BETWEEN Codex
 /// profiles via symlink (same model as Claude skills).
 pub fn list_codex_skills_library() -> Result<Vec<LibraryRow>, String> {
@@ -4361,38 +4388,43 @@ pub fn list_codex_skills_library() -> Result<Vec<LibraryRow>, String> {
     }
     let mut rows = Vec::new();
     for name in names {
-        let cells = cols
+        let paths: Vec<PathBuf> = cols
             .iter()
-            .map(|col| {
-                let dir = col.home.join(SKILLS_SUBDIR);
-                let p = dir.join(&name);
-                let present = p.is_dir()
-                    || fs::symlink_metadata(&p)
+            .map(|c| c.home.join(SKILLS_SUBDIR).join(&name))
+            .collect();
+        let present: Vec<bool> = paths
+            .iter()
+            .map(|p| {
+                p.is_dir()
+                    || fs::symlink_metadata(p)
                         .map(|m| m.file_type().is_symlink())
-                        .unwrap_or(false);
-                LibraryCell {
-                    install_id: col.id.clone(),
-                    install_name: col.label.clone(),
-                    data_dir: dir.to_string_lossy().to_string(),
-                    kind: col.kind.clone(),
-                    state: String::new(),
-                    present,
-                    detail: None,
-                    digest: None,
-                    link_target_digest: symlink_target_digest(&p),
-                }
+                        .unwrap_or(false)
             })
             .collect();
-        let mut row = LibraryRow {
+        let states = codex_skill_share_states(&paths, &present);
+        let cells = cols
+            .iter()
+            .enumerate()
+            .map(|(i, col)| LibraryCell {
+                install_id: col.id.clone(),
+                install_name: col.label.clone(),
+                data_dir: col.home.join(SKILLS_SUBDIR).to_string_lossy().to_string(),
+                kind: col.kind.clone(),
+                state: states[i].to_string(),
+                present: present[i],
+                detail: None,
+                digest: None,
+                link_target_digest: symlink_target_digest(&paths[i]),
+            })
+            .collect();
+        rows.push(LibraryRow {
             id: name.clone(),
             label: name,
             description: None,
             cells,
             interactive: true,
             group: Some("Codex skills".into()),
-        };
-        compute_row_states(&mut row, true);
-        rows.push(row);
+        });
     }
     Ok(rows)
 }
@@ -7665,6 +7697,32 @@ mod tests {
     }
 
     #[test]
+    fn codex_skill_share_states_real_source_plus_symlink_reads_shared_on_both() {
+        // Topology that apply_codex_skill_share creates: profile A holds a real
+        // skill dir, profile B symlinks into it. Both must read "shared".
+        let a = tempfile::tempdir().unwrap();
+        let b = tempfile::tempdir().unwrap();
+        let c = tempfile::tempdir().unwrap();
+        let a_skill = a.path().join("x");
+        fs::create_dir_all(&a_skill).unwrap();
+        let b_skill = b.path().join("x");
+        std::os::unix::fs::symlink(&a_skill, &b_skill).unwrap();
+        let c_skill = c.path().join("x"); // absent in C
+
+        let paths = vec![a_skill.clone(), b_skill.clone(), c_skill.clone()];
+        let present = vec![true, true, false];
+        let states = codex_skill_share_states(&paths, &present);
+        assert_eq!(states[0], "shared", "real source must read shared");
+        assert_eq!(states[1], "shared", "symlink target must read shared");
+        assert_eq!(states[2], "absent", "missing column is absent");
+
+        // A lone real dir with no link partner is independent, not shared.
+        let lone = vec![a_skill, c.path().join("y")];
+        let states2 = codex_skill_share_states(&lone, &[true, false]);
+        assert_eq!(states2[0], "independent");
+    }
+
+    #[test]
     fn codex_mcp_write_read_remove_at_explicit_path_roundtrips() {
         // The core of between-Codex-profile MCP sharing: copy a server into a
         // target profile's config.toml, read it back digest-stable, remove it.
@@ -7705,4 +7763,5 @@ mod tests {
         let c = serde_json::json!({ "command": "x", "args": ["2", "1"] });
         assert_ne!(mcp_value_digest(&a), mcp_value_digest(&c));
     }
+
 }

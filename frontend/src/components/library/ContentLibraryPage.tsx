@@ -429,23 +429,7 @@ export default function ContentLibraryPage() {
     // ~/.codex-<name>). Cells line up by CodexInstall id ("default" /
     // "profile:<name>").
     if (CODEX_KINDS.includes(activeKind)) {
-      // The backend always emits a "default" (~/.codex) column even if Codex.app
-      // isn't installed; mirror that (id "default") so its cells always have a
-      // matching column.
-      if (codexInstalls.length === 0)
-        return [
-          {
-            id: "default",
-            name: "Default",
-            kind: "default",
-            data_dir: "~/.codex",
-            app_path: null,
-            launcher_path: null,
-            managed: false,
-            is_running: false,
-          },
-        ];
-      return codexInstalls.map((c) => ({
+      const cols: DesktopInstall[] = codexInstalls.map((c) => ({
         id: c.id,
         name: c.kind === "default" ? "Default" : c.name,
         kind: c.kind,
@@ -455,6 +439,24 @@ export default function ContentLibraryPage() {
         managed: c.managed,
         is_running: c.is_running,
       }));
+      // The backend ALWAYS emits a "default" (~/.codex) column, but
+      // list_codex_installs omits the default install when Codex.app / its
+      // Desktop data dir is absent (CLI-only machines). Without a matching
+      // column those default cells — real ~/.codex content — would be silently
+      // dropped, so guarantee a "default" column here.
+      if (!cols.some((c) => c.id === "default")) {
+        cols.unshift({
+          id: "default",
+          name: "Default",
+          kind: "default",
+          data_dir: "~/.codex",
+          app_path: null,
+          launcher_path: null,
+          managed: false,
+          is_running: false,
+        });
+      }
+      return cols;
     }
     // Cross-tool MCP: Claude Code + Codex, copy-mode.
     if (activeKind === "mcp_cross") return [CLAUDE_CODE_MCP_COLUMN, CODEX_GLOBAL_COLUMN];
