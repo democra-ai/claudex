@@ -1,3 +1,5 @@
+mod convert;
+
 use chrono::{SecondsFormat, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -5198,6 +5200,20 @@ mod commands {
     }
 
     #[tauri::command]
+    pub fn import_codex_session_to_claude(
+        source: String,
+    ) -> Result<super::convert::ImportResult, String> {
+        super::convert::import_codex_session_to_claude(source)
+    }
+
+    #[tauri::command]
+    pub fn import_claude_session_to_codex(
+        source: String,
+    ) -> Result<super::convert::ImportResult, String> {
+        super::convert::import_claude_session_to_codex(source)
+    }
+
+    #[tauri::command]
     pub fn list_code_history(config_dir: String) -> Result<Vec<CodeProject>, String> {
         super::list_code_history(Path::new(&config_dir))
     }
@@ -5389,6 +5405,8 @@ pub fn run() {
             commands::launch_codex_install,
             commands::delete_desktop_profile,
             commands::delete_codex_profile,
+            commands::import_codex_session_to_claude,
+            commands::import_claude_session_to_codex,
             commands::list_code_history,
             commands::list_pair_code_history_sharing,
             commands::apply_pair_code_history_sharing,
