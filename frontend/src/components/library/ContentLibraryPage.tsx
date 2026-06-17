@@ -48,41 +48,37 @@ function SidebarRegion({
 }) {
   return (
     <div>
-      <div
-        className={cn(
-          "flex items-center justify-between rounded-md px-3 py-1.5",
-          accent === "claude" ? "bg-primary/5" : "bg-foreground/5",
-        )}
-      >
+      {/* Quiet section header — small uppercase label + count, a ghost "+", and
+       *  a hairline rule below. No heavy tinted band (Claude-Desktop calm). */}
+      <div className="flex items-center justify-between px-2.5 pb-1.5">
         <div className="flex items-center gap-2">
           <span
             className={cn(
-              "h-2.5 w-2.5 rounded-[3px]",
-              accent === "claude" ? "bg-primary" : "bg-foreground",
+              "h-2 w-2 rounded-full",
+              accent === "claude" ? "bg-primary" : "bg-[#4366F2]",
             )}
           />
-          <span className="font-sans text-[10px] uppercase tracking-[0.14em] text-muted-foreground/80">
+          <span className="font-sans text-[10px] font-medium uppercase tracking-[0.14em] text-muted-foreground/80">
             {label}
           </span>
-        </div>
-        <div className="flex items-center gap-1.5">
-          <span className="font-mono text-[10px] tabular-nums text-muted-foreground/60">
+          <span className="font-mono text-[10px] tabular-nums text-muted-foreground/45">
             {count}
           </span>
-          <Button
-            type="button"
-            size="icon"
-            variant="ghost"
-            onClick={onAddToggle}
-            className="h-5 w-5 rounded"
-            aria-label={`Add ${label} profile`}
-            aria-expanded={adding}
-          >
-            {adding ? <X className="h-3 w-3" /> : <Plus className="h-3.5 w-3.5" />}
-          </Button>
         </div>
+        <Button
+          type="button"
+          size="icon"
+          variant="ghost"
+          onClick={onAddToggle}
+          className="h-5 w-5 rounded text-muted-foreground/70 hover:text-foreground"
+          aria-label={`Add ${label} profile`}
+          aria-expanded={adding}
+        >
+          {adding ? <X className="h-3 w-3" /> : <Plus className="h-3.5 w-3.5" />}
+        </Button>
       </div>
-      <p className="px-3 pb-1 pt-0.5 font-sans text-[10px] leading-snug text-muted-foreground/60">
+      <div className="mx-2.5 mb-1.5 border-b border-border/50" />
+      <p className="px-2.5 pb-1.5 font-sans text-[10px] leading-snug text-muted-foreground/55">
         {caption}
       </p>
       <div className="space-y-0.5 px-1">{children}</div>
