@@ -741,12 +741,26 @@ fn shell_quote_single(value: &Path) -> String {
     value.to_string_lossy().replace('\'', "'\\''")
 }
 
-fn build_launch_applescript(data_dir: &Path, claude_app_path: &Path) -> String {
-    let safe_app = shell_quote_single(claude_app_path);
+/// Build the launcher's AppleScript. For Claude (Electron) `--user-data-dir`
+/// isolates the whole account. For Codex (CEF) `--user-data-dir` isolates only
+/// the Chromium/web layer; the OAuth token lives in `$CODEX_HOME/auth.json`
+/// (default `~/.codex`, shared by every instance), so a managed Codex profile
+/// must ALSO pin its own `CODEX_HOME` via `open --env` or it shows the same
+/// account. `--env` must precede `--args` (which swallows the rest).
+fn build_launch_applescript(
+    data_dir: &Path,
+    app_path: &Path,
+    codex_home: Option<&Path>,
+) -> String {
+    let safe_app = shell_quote_single(app_path);
     let safe_dir = shell_quote_single(data_dir);
+    let env_flag = match codex_home {
+        Some(home) => format!(" --env CODEX_HOME='{}'", shell_quote_single(home)),
+        None => String::new(),
+    };
     format!(
-        "do shell script \"open -n -a '{}' --args --user-data-dir='{}' > /dev/null 2>&1 &\"",
-        safe_app, safe_dir
+        "do shell script \"open -n -a '{}'{} --args --user-data-dir='{}' > /dev/null 2>&1 &\"",
+        safe_app, env_flag, safe_dir
     )
 }
 
@@ -781,7 +795,8 @@ fn compile_launcher_app(
     name: &str,
     data_dir: &Path,
     app_path: &Path,
-    claude_app_path: &Path,
+    target_app_path: &Path,
+    codex_home: Option<&Path>,
 ) -> Result<(), String> {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -790,8 +805,11 @@ fn compile_launcher_app(
     let tmp_dir = env::temp_dir().join(format!("claude-multiprofile-{nanos}"));
     fs::create_dir_all(&tmp_dir).map_err(|e| format!("Create temp directory: {e}"))?;
     let script_path = tmp_dir.join("launcher.applescript");
-    fs::write(&script_path, build_launch_applescript(data_dir, claude_app_path))
-        .map_err(|e| format!("Write launcher script: {e}"))?;
+    fs::write(
+        &script_path,
+        build_launch_applescript(data_dir, target_app_path, codex_home),
+    )
+    .map_err(|e| format!("Write launcher script: {e}"))?;
 
     if let Some(parent) = app_path.parent() {
         fs::create_dir_all(parent).map_err(|e| format!("Create app parent directory: {e}"))?;
@@ -808,7 +826,7 @@ fn compile_launcher_app(
 
     set_bundle_id(app_path, &unique_bundle_id(name));
     strip_quarantine(app_path);
-    copy_claude_icon(app_path, claude_app_path);
+    copy_claude_icon(app_path, target_app_path);
     Ok(())
 }
 
@@ -868,7 +886,7 @@ pub fn create_desktop_profile(name: String) -> Result<DesktopInstall, String> {
     }
 
     fs::create_dir_all(&data_dir).map_err(|e| format!("Create profile data directory: {e}"))?;
-    compile_launcher_app(&clean_name, &data_dir, &app_path, &claude_app_path)?;
+    compile_launcher_app(&clean_name, &data_dir, &app_path, &claude_app_path, None)?;
 
     registry.profiles.push(RegistryProfile {
         name: clean_name.clone(),
@@ -917,7 +935,9 @@ pub fn launch_desktop_install(install_id: String) -> Result<(), String> {
 
     let app = install.app_path.ok_or_else(|| "Claude.app source is missing".to_string())?;
     let mut open = Command::new("/usr/bin/open");
-    open.args(["-n", "-a", &app, "--args", "--user-data-dir", &install.data_dir]);
+    // `=` form (single token) so detect_running_data_dirs' `--user-data-dir=`
+    // needle matches the live process argv.
+    open.args(["-n", "-a", &app, "--args", &format!("--user-data-dir={}", install.data_dir)]);
     run_command(open, "Launch Claude profile")
 }
 
@@ -1878,11 +1898,23 @@ pub fn list_code_installs() -> Result<Vec<CodeInstall>, String> {
 
 // ===========================================================================
 // Codex profiles (Desktop launcher) — IDENTICAL in principle to Claude
-// Desktop. The Codex desktop app is Chromium-based and honors --user-data-dir
-// (its account/login state lives in ~/Library/Application Support/Codex, a
-// Chromium profile — exactly like Claude Desktop's Electron data dir). So a
-// "Codex profile" is a separate user-data-dir + a launcher .app that opens
-// Codex against it. No seeding, no env hacks — same mechanism as Claude.
+// Desktop. The Codex desktop app is Chromium-based (Electron) and honors
+// --user-data-dir, which isolates the *web* layer (cookies, local storage) in
+// ~/Library/Application Support/Codex-<Name>. BUT Codex's OAuth token lives in
+// the agent home, NOT the web profile, so a fully-isolated "Codex profile"
+// needs THREE things:
+//   1. its own --user-data-dir  (web layer)
+//   2. its own CODEX_HOME       (agent home: auth.json, config.toml, sessions)
+//   3. cli_auth_credentials_store="file" in that CODEX_HOME's config.toml
+// (3) is the subtle one: Codex defaults the token store to "auto", which writes
+// to a GLOBAL macOS keychain item ("Codex Auth") keyed by app identity, NOT by
+// CODEX_HOME — so without pinning "file" two profiles share one login the
+// moment the keyring write succeeds. We pass CODEX_HOME via `open --env` and
+// seed config.toml with the file backend (see ensure_codex_file_auth_backend).
+// The default install keeps CODEX_HOME unset → ~/.codex and is left untouched.
+// (Note: the Electron safeStorage master key that encrypts each web store is
+// also global per app install; that doesn't break isolation — the cookie jars
+// themselves are still separated by --user-data-dir.)
 // ===========================================================================
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -1924,6 +1956,43 @@ fn codex_launcher_path_for(name: &str) -> Result<PathBuf, String> {
     Ok(home_dir()?
         .join("Applications")
         .join(format!("Codex {}.app", title_case(name))))
+}
+
+/// Per-profile CODEX_HOME (its own auth.json / config.toml / sessions), mirroring
+/// Claude Code's `~/.claude-<name>` convention. The default install uses the
+/// unsuffixed `~/.codex`.
+fn codex_home_dir_for(name: &str) -> Result<PathBuf, String> {
+    let clean = sanitize_profile_name(name);
+    Ok(home_dir()?.join(format!(".codex-{clean}")))
+}
+
+/// Pin a profile's auth token to the FILE backend ($CODEX_HOME/auth.json).
+///
+/// Codex defaults `cli_auth_credentials_store = "auto"`, which writes the OAuth
+/// token to a GLOBAL macOS keychain item (service "Codex Auth"), keyed by app
+/// identity — NOT by CODEX_HOME. So `auto` would let two profiles share one
+/// login the moment the keyring write succeeds, defeating CODEX_HOME isolation.
+/// Forcing `"file"` keeps the token inside the per-profile CODEX_HOME, which is
+/// the only thing CODEX_HOME actually scopes. Idempotent; preserves the rest of
+/// config.toml. Never called for the default ~/.codex.
+fn ensure_codex_file_auth_backend(codex_home: &Path) -> Result<(), String> {
+    let path = codex_home.join("config.toml");
+    let raw = fs::read_to_string(&path).unwrap_or_default();
+    let mut doc: toml_edit::DocumentMut = raw
+        .parse()
+        .map_err(|e| format!("Parse {}: {e}", path.display()))?;
+    if doc
+        .get("cli_auth_credentials_store")
+        .and_then(|v| v.as_str())
+        == Some("file")
+    {
+        return Ok(());
+    }
+    doc["cli_auth_credentials_store"] = toml_edit::value("file");
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|e| format!("Create {}: {e}", parent.display()))?;
+    }
+    write_string_atomically(&path, &doc.to_string())
 }
 
 fn codex_install_from_default() -> Result<Option<CodexInstall>, String> {
@@ -2049,6 +2118,10 @@ pub fn create_codex_profile(name: String) -> Result<CodexInstall, String> {
     if data_dir == default_codex_desktop_data_dir()? {
         return Err("Refusing to use the default Codex data directory".to_string());
     }
+    let codex_home = codex_home_dir_for(&clean_name)?;
+    if codex_home == codex_home_dir()? {
+        return Err("Refusing to use the default ~/.codex directory".to_string());
+    }
     let launcher_path = codex_launcher_path_for(&clean_name)?;
 
     let mut registry = load_registry()?;
@@ -2060,10 +2133,21 @@ pub fn create_codex_profile(name: String) -> Result<CodexInstall, String> {
     }
 
     fs::create_dir_all(&data_dir).map_err(|e| format!("Create Codex profile data dir: {e}"))?;
-    compile_launcher_app(&clean_name, &data_dir, &launcher_path, &codex_app_path)?;
+    // A fresh, empty CODEX_HOME forces a brand-new login on first launch.
+    fs::create_dir_all(&codex_home).map_err(|e| format!("Create Codex profile home: {e}"))?;
+    // Pin the file auth backend so the new login can't land in the shared keychain.
+    ensure_codex_file_auth_backend(&codex_home)?;
+    compile_launcher_app(
+        &clean_name,
+        &data_dir,
+        &launcher_path,
+        &codex_app_path,
+        Some(&codex_home),
+    )?;
 
     let codex_json = serde_json::json!({
         "dataDir": data_dir.to_string_lossy(),
+        "codexHome": codex_home.to_string_lossy(),
         "launcherPath": launcher_path.to_string_lossy(),
         "codexAppPath": codex_app_path.to_string_lossy(),
     });
@@ -2114,23 +2198,89 @@ pub fn launch_codex_install(install_id: String) -> Result<(), String> {
         return run_command(open, "Launch Codex");
     }
 
-    if let Some(launcher) = install
-        .launcher_path
-        .as_ref()
-        .filter(|p| Path::new(p).exists())
-    {
-        let mut open = Command::new("/usr/bin/open");
-        open.arg(launcher);
-        return run_command(open, "Launch Codex profile");
-    }
-
-    // Fallback: open Codex.app directly against the profile's data dir.
+    // Managed profile: isolate BOTH layers. Launch the real Codex.app directly
+    // with `--env CODEX_HOME=…` (the in-app button is always correct this way,
+    // even for profiles whose launcher .app predates this fix) plus the
+    // Chromium `--user-data-dir`. We don't go through the launcher .app here so
+    // a stale launcher can't reintroduce the shared-account bug.
     let app = install
         .app_path
+        .clone()
         .ok_or_else(|| "Codex app path is missing".to_string())?;
+    let codex_home = codex_home_dir_for(&install.name)?;
+    fs::create_dir_all(&codex_home).map_err(|e| format!("Create Codex profile home: {e}"))?;
+    // Guarantee the file auth backend before every launch — this also heals a
+    // legacy profile that logged in under the old (shared-keychain) default.
+    ensure_codex_file_auth_backend(&codex_home)?;
+    heal_codex_launcher(&install, &codex_home);
+
+    // Pass `--user-data-dir=<dir>` (= form, single token) so the running
+    // process argv matches detect_running_codex_data_dirs' `--user-data-dir=`
+    // needle — otherwise an in-app-launched profile never reports as running.
     let mut open = Command::new("/usr/bin/open");
-    open.args(["-n", "-a", &app, "--args", "--user-data-dir", &install.data_dir]);
+    open.args([
+        "-n",
+        "-a",
+        &app,
+        "--env",
+        &format!("CODEX_HOME={}", codex_home.display()),
+        "--args",
+        &format!("--user-data-dir={}", install.data_dir),
+    ]);
     run_command(open, "Launch Codex profile")
+}
+
+/// Bring a pre-CODEX_HOME launcher .app up to date: recompile it to embed the
+/// profile's CODEX_HOME and record `codexHome` in the registry. No-op once the
+/// profile is already isolated (codexHome present). Best-effort — failures here
+/// don't block the in-app launch, which already passes CODEX_HOME directly.
+fn heal_codex_launcher(install: &CodexInstall, codex_home: &Path) {
+    let (Some(launcher), Some(app)) =
+        (install.launcher_path.as_ref(), install.app_path.as_ref())
+    else {
+        return;
+    };
+    let mut registry = match load_registry() {
+        Ok(r) => r,
+        Err(_) => return,
+    };
+    let already = match registry
+        .profiles
+        .iter()
+        .find(|p| p.name == install.name)
+        .and_then(|p| p.codex.as_ref())
+    {
+        Some(codex) => codex.get("codexHome").and_then(|v| v.as_str()).is_some(),
+        None => true, // no codex entry to heal
+    };
+    if already {
+        return;
+    }
+    let data_dir = PathBuf::from(&install.data_dir);
+    if compile_launcher_app(
+        &install.name,
+        &data_dir,
+        Path::new(launcher),
+        Path::new(app),
+        Some(codex_home),
+    )
+    .is_err()
+    {
+        return;
+    }
+    if let Some(codex) = registry
+        .profiles
+        .iter_mut()
+        .find(|p| p.name == install.name)
+        .and_then(|p| p.codex.as_mut())
+        .and_then(|c| c.as_object_mut())
+    {
+        codex.insert(
+            "codexHome".into(),
+            serde_json::Value::String(codex_home.to_string_lossy().to_string()),
+        );
+    }
+    let _ = save_registry(&registry);
 }
 
 // ===========================================================================
@@ -2277,6 +2427,14 @@ pub fn delete_codex_profile(install_id: String, delete_data: bool) -> Result<(),
     }
     if delete_data {
         remove_path(Path::new(&install.data_dir))?;
+        // Also erase the per-profile CODEX_HOME (auth.json, sessions, config).
+        // Use the DETERMINISTIC path (~/.codex-<clean>), never a registry-
+        // supplied string — sanitize_profile_name guarantees it can't be $HOME
+        // or "/". Belt-and-suspenders: also refuse the shared default ~/.codex.
+        let codex_home = codex_home_dir_for(&install.name)?;
+        if codex_home_dir().map(|d| d != codex_home).unwrap_or(true) {
+            remove_path(&codex_home)?;
+        }
     }
 
     registry.profiles[idx].codex = None;
@@ -7178,6 +7336,63 @@ mod tests {
         assert!(launcher
             .to_string_lossy()
             .ends_with(&format!("Applications/Codex {cased}.app")));
+        // CODEX_HOME mirrors Claude Code's ~/.claude-<name> dotdir convention.
+        let home = codex_home_dir_for("WORK").unwrap();
+        assert!(home.to_string_lossy().ends_with("/.codex-work"));
+    }
+
+    #[test]
+    fn ensure_codex_file_auth_backend_sets_file_and_preserves_other_keys() {
+        let home = tempfile::tempdir().unwrap();
+        // Pre-existing config with an unrelated key and the wrong store mode.
+        fs::write(
+            home.path().join("config.toml"),
+            "model = \"gpt-5\"\ncli_auth_credentials_store = \"auto\"\n",
+        )
+        .unwrap();
+        ensure_codex_file_auth_backend(home.path()).unwrap();
+        let out = fs::read_to_string(home.path().join("config.toml")).unwrap();
+        let doc: toml_edit::ImDocument<String> = out.parse().unwrap();
+        assert_eq!(
+            doc.get("cli_auth_credentials_store").and_then(|v| v.as_str()),
+            Some("file"),
+            "store mode must be pinned to file (keychain backend is global)"
+        );
+        assert_eq!(
+            doc.get("model").and_then(|v| v.as_str()),
+            Some("gpt-5"),
+            "unrelated keys must be preserved"
+        );
+        // Idempotent: a second call is a no-op and still valid.
+        ensure_codex_file_auth_backend(home.path()).unwrap();
+        let out2 = fs::read_to_string(home.path().join("config.toml")).unwrap();
+        assert!(out2.contains("cli_auth_credentials_store = \"file\""));
+    }
+
+    #[test]
+    fn ensure_codex_file_auth_backend_creates_config_when_absent() {
+        let home = tempfile::tempdir().unwrap();
+        // No config.toml yet — the helper should create one.
+        ensure_codex_file_auth_backend(home.path()).unwrap();
+        let out = fs::read_to_string(home.path().join("config.toml")).unwrap();
+        assert!(out.contains("cli_auth_credentials_store = \"file\""));
+    }
+
+    #[test]
+    fn codex_launcher_script_pins_codex_home_but_claude_does_not() {
+        let data = Path::new("/tmp/Codex-WORK");
+        let app = Path::new("/Applications/Codex.app");
+        let home = Path::new("/Users/me/.codex-work");
+        // Codex: must carry --env CODEX_HOME, placed BEFORE --args.
+        let codex = build_launch_applescript(data, app, Some(home));
+        assert!(codex.contains("--env CODEX_HOME='/Users/me/.codex-work'"));
+        let env_at = codex.find("--env").unwrap();
+        let args_at = codex.find("--args").unwrap();
+        assert!(env_at < args_at, "--env must precede --args");
+        // Claude: no CODEX_HOME — user-data-dir alone isolates Electron.
+        let claude = build_launch_applescript(data, app, None);
+        assert!(!claude.contains("CODEX_HOME"));
+        assert!(claude.contains("--user-data-dir="));
     }
 
     #[test]

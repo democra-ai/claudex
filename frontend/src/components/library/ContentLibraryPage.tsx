@@ -165,11 +165,11 @@ const KIND_SCOPE_CAPTION: Partial<Record<LibraryKind, string>> = {
   cowork_sessions: "Claude-only content.",
   preferences: "Claude-only content.",
   codex_sessions:
-    "Codex sessions are global to ~/.codex (every Codex profile shares them). Select one to import it into Claude Code.",
+    "Sessions from the default Codex home (~/.codex). Managed profiles keep their own ~/.codex-<name>. Select one to import it into Claude Code.",
   codex_skills:
-    "Codex skills live in ~/.codex/skills — global to all Codex profiles. Share across tools from the Share tab.",
+    "Skills in the default Codex home (~/.codex/skills). Share across tools from the Share tab.",
   codex_mcp:
-    "Codex MCP servers from ~/.codex/config.toml (TOML). Global to all Codex profiles.",
+    "MCP servers from the default Codex config (~/.codex/config.toml, TOML).",
 };
 
 /** Synthetic DesktopInstall-shaped column for the global Codex library. Codex
@@ -903,7 +903,7 @@ export default function ContentLibraryPage() {
               <SidebarRegion
                 label="Profiles"
                 accent="codex"
-                caption="Launch & login. Sessions, skills & MCPs are global to ~/.codex."
+                caption="Each profile is its own account — separate login + ~/.codex-<name>."
                 count={`${codexInstalls.length}`}
                 adding={codexAdding}
                 onAddToggle={() => setCodexAdding((o) => !o)}
