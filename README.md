@@ -5,7 +5,7 @@
 <h1 align="center">Claudex</h1>
 
 <p align="center">
-  Multiple Claude Desktop and Claude Code accounts, side by side on macOS.
+  Run multiple <b>Claude</b> and <b>Codex</b> accounts side by side on macOS — fully isolated profiles, with cross-tool skill sharing.
 </p>
 
 <p align="center">
@@ -19,20 +19,20 @@
   <img src="docs/assets/hero.png" alt="Claudex screenshot" width="880">
 </p>
 
-Each profile keeps its own login, chats, settings, MCP connectors, plugins, and skills. Open multiple Claude windows at once, each on a different account. Share extensions, MCP servers, and skills across profiles selectively, through a live matrix UI.
+Two walled-off profile worlds — **Claude** (Desktop + Code) and **Codex** — each with its own isolated logins, chats, settings, MCP, and skills. Open several windows at once, each on a different account. Skills are the one library both tools share: link a `SKILL.md` from Claude into Codex (or between profiles) right from the matrix. And import a session from one tool into the other as a fresh, resumable conversation.
 
-> **Unofficial community tool.** Uses public Electron flags (`--user-data-dir`) and an undocumented-but-stable Claude Code env var (`CLAUDE_CONFIG_DIR`) to isolate profiles. Not endorsed by Anthropic.
+> **Unofficial community tool.** Uses public Electron / Chromium flags (`--user-data-dir`) and the Claude Code env var (`CLAUDE_CONFIG_DIR`) to isolate profiles. Both Claude Desktop and the Codex desktop app are Chromium-based and honor `--user-data-dir`, so the same mechanism isolates each. Not endorsed by Anthropic or OpenAI.
 
 ## Features
 
-- **Side-by-side profiles** — fully isolated Desktop and Code accounts. Independent auth, chats, MCP, skills.
-- **Live status** — sidebar polls every 10 s; the running profile gets a pulsing dot and a `LIVE` pill.
-- **One click, two apps** — New Profile creates the Desktop launcher (`Claude WORK.app`) *and* the Code CLI alias (`claude-work`) in one step.
-- **Selective sharing** — extensions and skills via live symlinks (edits propagate both ways); MCP servers and preferences via atomic copy-on-apply.
-- **Matrix UI** — every profile × every content item in one grid. Five-state glyphs (■●◐○·) show share status at distance.
-- **Profile detail** — today's tokens, rolling 5h / 7d session counts, pace vs your own baseline, account identities, storage breakdown, sharing graph.
+- **Two worlds, one window** — a Claude region and a Codex region in the sidebar, each with its own `+` to add a profile and per-profile delete. Each profile is a Desktop launcher (`.app`) pointed at its own `--user-data-dir`, so logins never collide.
+- **One click, two apps** *(Claude)* — adding a Claude profile creates the Desktop launcher (`Claude WORK.app`) *and* the Code CLI alias (`claude-work`) together.
+- **Live status** — the sidebar polls every 10 s; the running profile gets a pulsing dot and a `LIVE` pill. Launch any profile with ▶.
+- **Cross-tool skill sharing** — Skills (`SKILL.md` dirs) are the one surface Claude and Codex share. The Skills matrix shows your Claude Code profiles **and** a global Codex column; toggle a cell to symlink a skill across the boundary. Non-destructive — it never clobbers a skill it didn't create.
+- **Content matrix** — every profile × every content item in one grid, with five-state glyphs (■ shared / ● copied / ◐ diverged / ○ independent / · absent). Per-kind captions say honestly what's cross-tool (Skills) vs Claude-only (extensions, MCP, sessions, preferences).
 - **Cross-tool import** — bring a Codex session into Claude Code (or vice-versa) as a brand-new, resumable session. `convert codex claude` parses the Codex rollout and writes a fresh `~/.claude/projects/…` transcript you can `claude --resume`. Import, not sync — see [How it works](#how-it-works).
-- **CLI included** — the original interactive wizard is here too: `add`, `list`, `status`, `convert`, `repair`, `remove`.
+- **Profile detail** *(Claude)* — today's tokens, rolling 5h / 7d session counts, pace vs your own baseline, account identities, storage breakdown, sharing graph.
+- **CLI included** — `add`, `list`, `status`, `convert`, `repair`, `remove`.
 
 ## Install
 
