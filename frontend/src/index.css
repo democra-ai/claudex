@@ -6,63 +6,66 @@
 
 @layer base {
   :root {
-    /* Claude-tuned palette — warm cream + copper, editorial feel. */
-    --background: 47 33% 96%;       /* #f5f4ee — warm cream */
-    --foreground: 39 25% 18%;       /* #3d3929 — deep warm brown */
-    --muted: 45 28% 92%;            /* #ece9dd */
-    --muted-foreground: 35 12% 47%; /* #83786b */
-    --popover: 48 38% 98%;          /* #fbfaf6 */
-    --popover-foreground: 39 25% 18%;
-    --card: 48 38% 98%;
-    --card-foreground: 39 25% 18%;
-    --border: 42 22% 85%;           /* #e2dccb — subtle warm */
-    --input: 42 22% 85%;
-    --primary: 16 56% 53%;          /* #c96442 — Claude copper */
-    --primary-foreground: 48 38% 98%;
-    --secondary: 45 28% 92%;
-    --secondary-foreground: 39 25% 18%;
+    /* Palette lifted from Claude Desktop's own tokens (its bundled ion-dist
+     *  CSS): warm paper bg #faf9f5, WHITE content cards floating on it, warm
+     *  grey borders, neutral-warm near-black text, clay copper accent. */
+    --background: 60 14% 97%;       /* #faf9f5 — Claude warm paper */
+    --foreground: 48 7% 15%;        /* warm near-black (Claude text) */
+    --muted: 50 14% 94%;            /* #f0eee6 — warm sidebar/secondary */
+    --muted-foreground: 45 4% 44%;  /* #726f68 */
+    --popover: 0 0% 100%;           /* white — Claude content surface */
+    --popover-foreground: 48 7% 15%;
+    --card: 0 0% 100%;              /* white card floats on the paper */
+    --card-foreground: 48 7% 15%;
+    --border: 53 13% 88%;           /* #e5e2d8 — Claude warm border */
+    --input: 53 13% 88%;
+    --primary: 16 56% 53%;          /* #c96442 — Claude clay (emphasized) */
+    --primary-foreground: 0 0% 100%;
+    --secondary: 50 14% 94%;
+    --secondary-foreground: 48 7% 15%;
     --accent: 16 56% 53%;
-    --accent-foreground: 48 38% 98%;
+    --accent-foreground: 0 0% 100%;
     --destructive: 0 60% 45%;
-    --destructive-foreground: 48 38% 98%;
+    --destructive-foreground: 0 0% 100%;
     --ring: 16 56% 53%;
-    --radius: 0.5rem;               /* 8px — softer than terminal */
+    --radius: 0.5rem;
 
     /* Cell-state palette — anchored to copper, with editorial restraint. */
     --state-shared: 16 56% 53%;     /* copper — live link */
-    --state-copied: 39 25% 28%;     /* deep warm — neutral filled */
+    --state-copied: 48 7% 28%;      /* deep warm — neutral filled */
     --state-diverged: 28 70% 48%;   /* warm amber */
-    --state-independent: 35 12% 55%;/* mid warm grey */
-    --state-absent: 42 18% 80%;     /* very dim warm */
+    --state-independent: 45 5% 55%; /* mid warm grey */
+    --state-absent: 50 14% 84%;     /* very dim warm */
   }
 
   .dark {
-    /* Warm charcoal — Claude.ai's dark feel. Not stark black. */
-    --background: 39 8% 14%;        /* #262624 */
-    --foreground: 45 28% 92%;       /* #ece9dd */
-    --muted: 39 8% 18%;             /* #2e2d2a */
-    --muted-foreground: 35 12% 65%; /* #a8a399 */
-    --popover: 39 8% 16%;
-    --popover-foreground: 45 28% 92%;
-    --card: 39 8% 17%;
-    --card-foreground: 45 28% 92%;
-    --border: 39 8% 24%;            /* #3d3a35 */
-    --input: 39 8% 24%;
-    --primary: 16 58% 60%;          /* #d4734a — copper, brighter on dark */
-    --primary-foreground: 39 8% 14%;
-    --secondary: 39 8% 20%;
-    --secondary-foreground: 45 28% 92%;
+    /* Claude Desktop dark — warm charcoal #262624 (its --_gray neutrals,
+     *  H~60 low-sat, not the browner H39 we had before). */
+    --background: 60 3% 15%;        /* #262624 */
+    --foreground: 50 14% 96%;       /* warm off-white */
+    --muted: 60 2% 20%;             /* #333330 */
+    --muted-foreground: 48 5% 63%;  /* #a3a09a */
+    --popover: 60 2% 17%;
+    --popover-foreground: 50 14% 96%;
+    --card: 60 2% 18%;
+    --card-foreground: 50 14% 96%;
+    --border: 60 3% 26%;            /* #424240 */
+    --input: 60 3% 26%;
+    --primary: 16 58% 60%;          /* #d4734a — clay, brighter on dark */
+    --primary-foreground: 60 3% 15%;
+    --secondary: 60 2% 22%;
+    --secondary-foreground: 50 14% 96%;
     --accent: 16 58% 60%;
-    --accent-foreground: 39 8% 14%;
+    --accent-foreground: 60 3% 15%;
     --destructive: 0 55% 55%;
-    --destructive-foreground: 45 28% 92%;
+    --destructive-foreground: 50 14% 96%;
     --ring: 16 58% 60%;
 
     --state-shared: 16 58% 60%;
-    --state-copied: 45 28% 80%;
+    --state-copied: 50 14% 80%;
     --state-diverged: 28 70% 60%;
-    --state-independent: 35 12% 55%;
-    --state-absent: 39 8% 30%;
+    --state-independent: 45 5% 58%;
+    --state-absent: 60 3% 30%;
   }
 }
 
