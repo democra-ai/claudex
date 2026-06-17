@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Info, Play, Plus, Share2, X } from "lucide-react";
+import { ArrowLeftRight, Info, Play, Plus, Share2, X } from "lucide-react";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -147,6 +147,9 @@ const EMPTY_HINTS: Record<LibraryKind, string> = {
   cowork_skills: "No Cowork skills — open Cowork in any profile once.",
   skills: "No skills found in ~/.claude/skills or ~/.codex/skills.",
   preferences: "Allowlisted preferences not set in any profile.",
+  codex_sessions: "No Codex sessions in ~/.codex/sessions yet.",
+  codex_skills: "No skills in ~/.codex/skills yet.",
+  codex_mcp: "No MCP servers in ~/.codex/config.toml.",
 };
 
 /** Per-kind one-liner shown above the matrix explaining the Codex situation. */
@@ -158,19 +161,35 @@ const KIND_SCOPE_CAPTION: Partial<Record<LibraryKind, string>> = {
   code_history: "Claude-only content.",
   cowork_sessions: "Claude-only content.",
   preferences: "Claude-only content.",
+  codex_sessions:
+    "Codex sessions are global to ~/.codex (every Codex profile shares them). Select one to import it into Claude Code.",
+  codex_skills:
+    "Codex skills live in ~/.codex/skills — global to all Codex profiles. Share across tools from the Share tab.",
+  codex_mcp:
+    "Codex MCP servers from ~/.codex/config.toml (TOML). Global to all Codex profiles.",
 };
 
-/** Synthetic DesktopInstall-shaped column for the global Codex skills library. */
-const CODEX_SKILLS_COLUMN: DesktopInstall = {
+/** Synthetic DesktopInstall-shaped column for the global Codex library. Codex
+ *  agent state (sessions / skills / config.toml) lives at ~/.codex and is shared
+ *  by every Codex profile (the launchers isolate only the Chromium login), so a
+ *  single column represents all of it. */
+const CODEX_GLOBAL_COLUMN: DesktopInstall = {
   id: "codex:global",
   name: "Codex",
   kind: "profile",
-  data_dir: "~/.codex/skills",
+  data_dir: "~/.codex",
   app_path: null,
   launcher_path: null,
   managed: true,
   is_running: false,
 };
+
+/** The three Codex-private content kinds (global to ~/.codex). */
+const CODEX_KINDS: LibraryKind[] = [
+  "codex_sessions",
+  "codex_skills",
+  "codex_mcp",
+];
 
 interface SidebarProfileRowProps {
   profile: DesktopInstall;
@@ -351,6 +370,7 @@ export default function ContentLibraryPage() {
   const [selection, setSelection] = useState<Selection>(null);
   const [busy, setBusy] = useState(false);
   const [applying, setApplying] = useState(false);
+  const [importing, setImporting] = useState(false);
   const [loadingKind, setLoadingKind] = useState<LibraryKind | null>(null);
   // Per-region inline add state — each region's "+" toggles its own input.
   const [claudeAdding, setClaudeAdding] = useState(false);
@@ -389,7 +409,10 @@ export default function ContentLibraryPage() {
   // Desktop-profile columns the other kinds use. We feed the Matrix synthetic
   // DesktopInstall-shaped columns whose ids match the backend cell ids.
   const matrixColumns = useMemo<DesktopInstall[]>(() => {
+    // Codex-private kinds: one global ~/.codex column.
+    if (CODEX_KINDS.includes(activeKind)) return [CODEX_GLOBAL_COLUMN];
     if (activeKind !== "skills") return visibleProfiles;
+    // Cross-tool Skills: Claude CODE config dirs + one global Codex column.
     const claudeCols: DesktopInstall[] = codeInstalls.map((c) => ({
       id: c.id,
       name: c.name,
@@ -400,7 +423,7 @@ export default function ContentLibraryPage() {
       managed: c.managed,
       is_running: false,
     }));
-    return [...claudeCols, CODEX_SKILLS_COLUMN];
+    return [...claudeCols, CODEX_GLOBAL_COLUMN];
   }, [activeKind, visibleProfiles, codeInstalls]);
 
   const counts = useMemo(() => {
@@ -415,6 +438,9 @@ export default function ContentLibraryPage() {
       "cowork_skills",
       "skills",
       "preferences",
+      "codex_sessions",
+      "codex_skills",
+      "codex_mcp",
     ] as LibraryKind[]) {
       const rows = rowsByKind[kind];
       out[kind] = rows ? computeKindCount(rows) : null;
@@ -517,6 +543,9 @@ export default function ContentLibraryPage() {
       "cowork_skills",
       "skills",
       "preferences",
+      "codex_sessions",
+      "codex_skills",
+      "codex_mcp",
     ];
     const todo = others.filter((k) => k !== activeKind && !rowsByKind[k]);
     if (todo.length === 0 || !isTauri()) return;
@@ -676,6 +705,27 @@ export default function ContentLibraryPage() {
     [rowsByKind, activeKind],
   );
 
+  // Convert a Codex session (the selected codex_sessions row) into a fresh
+  // Claude Code session on disk. We surface the resume command rather than
+  // dumping the transcript — the import writes a real ~/.claude/projects file.
+  const handleImportCodexSession = useCallback(
+    async (sessionId: string) => {
+      setImporting(true);
+      try {
+        const res = await api.importCodexSessionToClaude(sessionId);
+        push(
+          `Imported ${res.turns} turn${res.turns === 1 ? "" : "s"} → Claude Code. Resume with:  claude --resume ${res.session_id}`,
+          "success",
+        );
+      } catch (e) {
+        push(String(e), "error");
+      } finally {
+        setImporting(false);
+      }
+    },
+    [push],
+  );
+
   // Each region's "+" creates that type directly — Claude profile (Desktop
   // launcher + Code CLI alias) or Codex profile (Desktop launcher). Both are
   // --user-data-dir launchers; each isolates its own login.
@@ -747,14 +797,19 @@ export default function ContentLibraryPage() {
     setCodexAdding(false);
     if (tab === "share") {
       setActiveKind("skills");
+    } else if (tab === "codex") {
+      setActiveKind((k) => (CODEX_KINDS.includes(k) ? k : "codex_sessions"));
     } else if (tab === "claude") {
-      setActiveKind((k) => (k === "skills" ? "code_history" : k));
+      setActiveKind((k) => (CLAUDE_KINDS.includes(k) ? k : "code_history"));
     }
   }, []);
 
   const activeRows = rowsByKind[activeKind] ?? [];
   const selectedRowId =
     selection?.type === "row" ? selection.row.id : null;
+  const selectedRow = selectedRowId
+    ? activeRows.find((r) => r.id === selectedRowId) ?? null
+    : null;
   const selectedInstallId =
     selection?.type === "profile" ? selection.install.id : null;
 
@@ -823,11 +878,12 @@ export default function ContentLibraryPage() {
           ) : null}
 
           {activeTab === "codex" ? (
+            <>
             <div className="mx-2">
               <SidebarRegion
                 label="Profiles"
                 accent="codex"
-                caption="Launch & login. Skills shared via the Share tab."
+                caption="Launch & login. Sessions, skills & MCPs are global to ~/.codex."
                 count={`${codexInstalls.length}`}
                 adding={codexAdding}
                 onAddToggle={() => setCodexAdding((o) => !o)}
@@ -909,6 +965,20 @@ export default function ContentLibraryPage() {
                 ))}
               </SidebarRegion>
             </div>
+            <div className="mx-2 border-t border-border/60 px-1 pt-3">
+              <KindNav
+                value={activeKind}
+                onChange={(k) => {
+                  setActiveKind(k);
+                  setPending(new Map());
+                  setSelection((current) => (current?.type === "row" ? null : current));
+                }}
+                counts={counts}
+                only={CODEX_KINDS}
+                heading="Content"
+              />
+            </div>
+            </>
           ) : null}
 
           {activeTab === "share" ? (
@@ -957,88 +1027,68 @@ export default function ContentLibraryPage() {
           </div>
         ) : null}
 
-        {activeTab === "codex" ? (
-          (() => {
-            const codexSkills: { name: string; state: string }[] = (
-              rowsByKind["skills"] ?? []
-            ).flatMap((r) => {
-              const cell = r.cells.find((c) => c.install_id === "codex:global");
-              return cell?.present ? [{ name: r.label, state: String(cell.state) }] : [];
-            });
-            return (
-              <div className="flex min-h-0 flex-1 flex-col">
-                <div className="mb-2 flex items-center gap-2 rounded-md border border-border/60 bg-muted/30 px-3 py-1.5 font-sans text-[11px] text-muted-foreground">
-                  <CodexMark className="h-3 w-3 text-[#4366F2]" />
-                  Codex skills (~/.codex/skills) — global, shared by all Codex
-                  profiles. Manage cross-tool sharing in the Share tab.
-                </div>
-                <div className="min-h-0 flex-1 overflow-y-auto rounded-md border border-border/60">
-                  <div className="border-b bg-card/40 px-4 py-2 font-sans text-[11px] uppercase tracking-[0.12em] text-muted-foreground/80">
-                    Skills in Codex · {codexSkills.length}
-                  </div>
-                  {codexSkills.length === 0 ? (
-                    <p className="px-4 py-6 text-center font-sans text-[12px] text-muted-foreground/70">
-                      No skills in ~/.codex/skills yet. Share one from the Share tab.
-                    </p>
-                  ) : (
-                    <ul className="divide-y divide-border/40">
-                      {codexSkills.map((s) => (
-                        <li key={s.name} className="flex items-center justify-between px-4 py-2">
-                          <span className="truncate font-sans text-[13px] text-foreground/90">{s.name}</span>
-                          <span
-                            className={cn(
-                              "shrink-0 rounded-full px-2 py-0.5 font-sans text-[9px] uppercase tracking-wider",
-                              s.state === "shared"
-                                ? "bg-primary/15 text-primary"
-                                : "bg-muted text-muted-foreground",
-                            )}
-                          >
-                            {s.state === "shared" ? "linked from Claude" : "Codex-native"}
-                          </span>
-                        </li>
-                      ))}
-                    </ul>
-                  )}
-                </div>
-                <p className="mt-2 px-1 font-sans text-[10px] text-muted-foreground/60">
-                  Sessions &amp; login live in each Codex profile's own data dir
-                  (Chromium-private) — manage profiles on the left.
-                </p>
-              </div>
-            );
-          })()
-        ) : (
-          <>
-            {KIND_SCOPE_CAPTION[activeKind] ? (
-              <div className="flex items-center gap-2 rounded-md border border-border/60 bg-muted/30 px-3 py-1.5 font-sans text-[11px] text-muted-foreground">
-                {activeKind === "skills" ? (
-                  <span className="h-2 w-2 shrink-0 rounded-[2px] bg-foreground" />
-                ) : null}
-                {KIND_SCOPE_CAPTION[activeKind]}
-              </div>
+        {KIND_SCOPE_CAPTION[activeKind] ? (
+          <div className="flex items-center gap-2 rounded-md border border-border/60 bg-muted/30 px-3 py-1.5 font-sans text-[11px] text-muted-foreground">
+            {activeKind === "skills" ? (
+              <span className="h-2 w-2 shrink-0 rounded-[2px] bg-foreground" />
+            ) : activeTab === "codex" ? (
+              <CodexMark className="h-3 w-3 shrink-0 text-[#4366F2]" />
             ) : null}
+            {KIND_SCOPE_CAPTION[activeKind]}
+          </div>
+        ) : null}
 
-            {matrixColumns.length === 0 ? (
-              <div className="flex flex-1 items-center justify-center text-muted-foreground">
-                <p className="font-sans text-sm">
-                  {activeKind === "skills"
-                    ? "No Claude Code or Codex install found."
-                    : "No Claude profiles checked — toggle one on the left."}
-                </p>
-              </div>
-            ) : (
-              <Matrix
-                rows={activeRows}
-                profiles={matrixColumns}
-                pending={pending}
-                onCellToggle={handleCellToggle}
-                onRowSelect={handleSelectRow}
-                selectedRowId={selectedRowId}
-                loading={loadingKind === activeKind}
-                emptyHint={EMPTY_HINTS[activeKind]}
-              />
-            )}
-          </>
+        {/* Import strip — convert the selected Codex session into Claude Code. */}
+        {activeKind === "codex_sessions" ? (
+          <div className="flex items-center justify-between gap-3 rounded-md border border-primary/30 bg-primary/5 px-3 py-2">
+            <div className="min-w-0 font-sans text-[11px] text-muted-foreground">
+              {selectedRow ? (
+                <span>
+                  Selected{" "}
+                  <span className="font-medium text-foreground">
+                    {selectedRow.label}
+                  </span>{" "}
+                  — converts into a new Claude Code session on disk.
+                </span>
+              ) : (
+                <span>
+                  Click a Codex session below to select it, then import it into
+                  Claude Code.
+                </span>
+              )}
+            </div>
+            <Button
+              type="button"
+              size="sm"
+              disabled={!selectedRowId || importing}
+              onClick={() => selectedRowId && handleImportCodexSession(selectedRowId)}
+              className="shrink-0 gap-1.5"
+            >
+              <ArrowLeftRight className="h-3.5 w-3.5" />
+              {importing ? "Importing…" : "Import to Claude"}
+            </Button>
+          </div>
+        ) : null}
+
+        {matrixColumns.length === 0 ? (
+          <div className="flex flex-1 items-center justify-center text-muted-foreground">
+            <p className="font-sans text-sm">
+              {activeKind === "skills"
+                ? "No Claude Code or Codex install found."
+                : "No Claude profiles checked — toggle one on the left."}
+            </p>
+          </div>
+        ) : (
+          <Matrix
+            rows={activeRows}
+            profiles={matrixColumns}
+            pending={pending}
+            onCellToggle={handleCellToggle}
+            onRowSelect={handleSelectRow}
+            selectedRowId={selectedRowId}
+            loading={loadingKind === activeKind}
+            emptyHint={EMPTY_HINTS[activeKind]}
+          />
         )}
       </main>
 

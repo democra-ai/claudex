@@ -3,6 +3,7 @@ import type {
   CodeInstall,
   CodexInstall,
   CodeProject,
+  ImportResult,
   CopySummary,
   DesktopInstall,
   LibraryCellChange,
@@ -230,8 +231,22 @@ export const api = {
         ? "list_library_cowork_skills"
         : kind === "skills"
         ? "list_skills_library"
+        : kind === "codex_sessions"
+        ? "list_codex_sessions_library"
+        : kind === "codex_skills"
+        ? "list_codex_skills_library"
+        : kind === "codex_mcp"
+        ? "list_codex_mcp_library"
         : "list_library_preferences";
     return invoke(command);
+  },
+
+  importCodexSessionToClaude(source: string): Promise<ImportResult> {
+    return invoke("import_codex_session_to_claude", { source });
+  },
+
+  importClaudeSessionToCodex(source: string): Promise<ImportResult> {
+    return invoke("import_claude_session_to_codex", { source });
   },
 
   listSessionsForProject(

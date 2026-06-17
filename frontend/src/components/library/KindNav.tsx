@@ -56,6 +56,24 @@ const KINDS: KindDef[] = [
     icon: Settings2,
     blurb: "allowlisted prefs",
   },
+  {
+    value: "codex_sessions",
+    label: "Sessions",
+    icon: MessagesSquare,
+    blurb: "~/.codex/sessions",
+  },
+  {
+    value: "codex_skills",
+    label: "Skills",
+    icon: Wrench,
+    blurb: "~/.codex/skills",
+  },
+  {
+    value: "codex_mcp",
+    label: "MCPs",
+    icon: Boxes,
+    blurb: "config.toml",
+  },
 ];
 
 interface KindNavProps {

@@ -4036,6 +4036,153 @@ fn apply_skill_share(change: &LibraryCellChange) -> Result<bool, String> {
     }
 }
 
+// ===========================================================================
+// Codex content (browse) — the Codex tab's own "Content" kinds over the ONE
+// global ~/.codex (sessions, skills, MCP). Codex agent config is global
+// (launchers set --user-data-dir, not CODEX_HOME), so there's no between-
+// Codex-profiles matrix: every row renders in a single synthetic Codex column,
+// browse-only (interactive: false). Sharing them is cross-TOOL (the Share tab).
+// ===========================================================================
+
+fn codex_home_dir() -> Result<PathBuf, String> {
+    match std::env::var("CODEX_HOME") {
+        Ok(h) if !h.is_empty() => Ok(PathBuf::from(h)),
+        _ => Ok(home_dir()?.join(".codex")),
+    }
+}
+
+fn codex_config_path() -> Result<PathBuf, String> {
+    Ok(codex_home_dir()?.join("config.toml"))
+}
+
+/// A single-column browse row for the Codex tab.
+fn codex_browse_row(
+    id: String,
+    label: String,
+    detail: Option<String>,
+    present: bool,
+    group: &str,
+) -> LibraryRow {
+    LibraryRow {
+        id,
+        label,
+        description: detail.clone(),
+        cells: vec![LibraryCell {
+            install_id: CODEX_SKILLS_GLOBAL_ID.to_string(),
+            install_name: "Codex".to_string(),
+            data_dir: String::new(),
+            kind: "codex".to_string(),
+            state: if present { "independent".to_string() } else { "absent".to_string() },
+            present,
+            detail,
+            digest: None,
+            link_target_digest: None,
+        }],
+        interactive: false,
+        group: Some(group.to_string()),
+    }
+}
+
+/// Codex sessions: rows from session_index.jsonl (id, thread_name, updated_at),
+/// newest first. The per-row import action lives in the frontend.
+pub fn list_codex_sessions_library() -> Result<Vec<LibraryRow>, String> {
+    let idx = codex_home_dir()?.join("session_index.jsonl");
+    let raw = match fs::read_to_string(&idx) {
+        Ok(r) => r,
+        Err(_) => return Ok(Vec::new()),
+    };
+    let mut entries: Vec<(String, String, String)> = raw
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+        .map(|v| {
+            let id = v.get("id").and_then(|x| x.as_str()).unwrap_or("").to_string();
+            let name = v
+                .get("thread_name")
+                .and_then(|x| x.as_str())
+                .filter(|s| !s.is_empty())
+                .unwrap_or("(untitled)")
+                .to_string();
+            let upd = v.get("updated_at").and_then(|x| x.as_str()).unwrap_or("").to_string();
+            (id, name, upd)
+        })
+        .filter(|(id, _, _)| !id.is_empty())
+        .collect();
+    // newest first
+    entries.sort_by(|a, b| b.2.cmp(&a.2));
+    Ok(entries
+        .into_iter()
+        .map(|(id, name, upd)| {
+            let detail = if upd.len() >= 10 { Some(format!("updated {}", &upd[..10])) } else { None };
+            codex_browse_row(id, name, detail, true, "Codex sessions")
+        })
+        .collect())
+}
+
+/// Codex skills: the SKILL.md dirs in ~/.codex/skills, flagged linked-from-
+/// Claude (a symlink) vs Codex-native.
+pub fn list_codex_skills_library() -> Result<Vec<LibraryRow>, String> {
+    let dir = codex_skills_dir()?;
+    let mut rows = Vec::new();
+    if let Ok(rd) = fs::read_dir(&dir) {
+        let mut names: Vec<(String, bool)> = rd
+            .flatten()
+            .filter_map(|e| {
+                let n = e.file_name().to_string_lossy().to_string();
+                if n.starts_with('.') {
+                    return None;
+                }
+                let is_link = fs::symlink_metadata(e.path())
+                    .map(|m| m.file_type().is_symlink())
+                    .unwrap_or(false);
+                if e.path().is_dir() || is_link {
+                    Some((n, is_link))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        names.sort();
+        for (n, is_link) in names {
+            let detail = Some(if is_link { "linked from Claude".to_string() } else { "Codex-native".to_string() });
+            rows.push(codex_browse_row(n.clone(), n, detail, true, "Codex skills"));
+        }
+    }
+    Ok(rows)
+}
+
+/// Codex MCP: the [mcp_servers.<name>] tables in ~/.codex/config.toml.
+pub fn list_codex_mcp_library() -> Result<Vec<LibraryRow>, String> {
+    let path = codex_config_path()?;
+    let raw = match fs::read_to_string(&path) {
+        Ok(r) => r,
+        Err(_) => return Ok(Vec::new()),
+    };
+    let doc: toml_edit::ImDocument<String> = match raw.parse() {
+        Ok(d) => d,
+        Err(_) => return Ok(Vec::new()),
+    };
+    let mut rows = Vec::new();
+    if let Some(servers) = doc.get("mcp_servers").and_then(|i| i.as_table()) {
+        let mut names: Vec<String> = servers.iter().map(|(k, _)| k.to_string()).collect();
+        names.sort();
+        for name in names {
+            if let Some(item) = servers.get(&name) {
+                let cmd = item.get("command").and_then(|v| v.as_str()).unwrap_or("");
+                let arg0 = item
+                    .get("args")
+                    .and_then(|v| v.as_array())
+                    .and_then(|a| a.get(0))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let detail = Some(format!("{cmd} {arg0}").trim().to_string());
+                rows.push(codex_browse_row(name.clone(), name, detail, true, "Codex MCP"));
+            }
+        }
+    }
+    Ok(rows)
+}
+
 pub fn apply_library_change(
     kind: String,
     change: LibraryCellChange,
@@ -5325,6 +5472,21 @@ mod commands {
     }
 
     #[tauri::command]
+    pub fn list_codex_sessions_library() -> Result<Vec<LibraryRow>, String> {
+        super::list_codex_sessions_library()
+    }
+
+    #[tauri::command]
+    pub fn list_codex_skills_library() -> Result<Vec<LibraryRow>, String> {
+        super::list_codex_skills_library()
+    }
+
+    #[tauri::command]
+    pub fn list_codex_mcp_library() -> Result<Vec<LibraryRow>, String> {
+        super::list_codex_mcp_library()
+    }
+
+    #[tauri::command]
     pub fn list_library_preferences() -> Result<Vec<LibraryRow>, String> {
         super::list_preferences_library()
     }
@@ -5422,6 +5584,9 @@ pub fn run() {
             commands::list_library_mcp,
             commands::list_library_cowork_skills,
             commands::list_skills_library,
+            commands::list_codex_sessions_library,
+            commands::list_codex_skills_library,
+            commands::list_codex_mcp_library,
             commands::list_library_preferences,
             commands::apply_library_changes,
             commands::list_library_code_history,

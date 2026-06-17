@@ -277,7 +277,21 @@ export type LibraryKind =
   | "mcp_servers"
   | "cowork_skills"
   | "skills"
-  | "preferences";
+  | "preferences"
+  | "codex_sessions"
+  | "codex_skills"
+  | "codex_mcp";
+
+/** Result of importing a session from one tool into the other. */
+export type ImportResult = {
+  from: string;
+  path: string;
+  session_id: string;
+  cwd: string;
+  turns: number;
+  /** "maybe" for claude→codex (may not show in the Codex picker until reindex). */
+  picker: string | null;
+};
 
 // -----------------------------
 // Profile stats — codexbar-style status panel
