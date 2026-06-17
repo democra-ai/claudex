@@ -63,6 +63,11 @@ interface KindNavProps {
   onChange: (kind: LibraryKind) => void;
   /** Per-kind counts of {synced, total} for the badge — null = unknown yet. */
   counts: Partial<Record<LibraryKind, { synced: number; total: number } | null>>;
+  /** Restrict which kinds are shown (e.g. Claude tab hides "skills"; the
+   *  Share tab shows only "skills"). Defaults to all. */
+  only?: LibraryKind[];
+  /** Section label above the list. Defaults to "Content". */
+  heading?: string;
 }
 
 /** Compute "synced" count for a kind given its rows. A row is "synced" if at
@@ -80,13 +85,14 @@ export function computeKindCount(rows: LibraryRow[]): {
   return { synced, total: rows.length };
 }
 
-export function KindNav({ value, onChange, counts }: KindNavProps) {
+export function KindNav({ value, onChange, counts, only, heading = "Content" }: KindNavProps) {
+  const kinds = only ? KINDS.filter((k) => only.includes(k.value)) : KINDS;
   return (
     <nav className="flex flex-col gap-0.5">
       <div className="px-3 pb-2 font-sans text-[10px] uppercase tracking-[0.14em] text-muted-foreground/70">
-        Content
+        {heading}
       </div>
-      {KINDS.map((kind) => {
+      {kinds.map((kind) => {
         const Icon = kind.icon;
         const active = value === kind.value;
         const count = counts[kind.value];

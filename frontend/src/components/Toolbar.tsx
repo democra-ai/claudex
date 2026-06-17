@@ -39,15 +39,16 @@ export function Toolbar({ onRefresh, busy }: ToolbarProps) {
       data-tauri-drag-region
       className="flex h-[45px] items-center justify-between border-b bg-background pl-[80px] pr-4"
     >
-      <div data-tauri-drag-region className="flex items-center gap-2.5">
-        {/* Logo: the stacked Claude mark, baked into a PNG by PIL from the
-         *  official Claude.app icon. Served by Vite from public/. */}
+      <div data-tauri-drag-region className="flex items-center gap-2">
+        {/* The Claude×Codex split mark. Kept at 16px with a rounded mask so it
+         *  sits in scale with the title and the action icons, not looming. */}
         <img
           data-tauri-drag-region
           src="/logo-mark.png"
-          width="22"
-          height="22"
+          width="16"
+          height="16"
           alt="Claudex"
+          className="rounded-[4px]"
           style={{ imageRendering: "auto" }}
         />
         <h1

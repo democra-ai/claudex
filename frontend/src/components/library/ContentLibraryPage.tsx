@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Info, Play, Plus, X } from "lucide-react";
+import { Info, Play, Plus, Share2, X } from "lucide-react";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -276,11 +276,67 @@ function SidebarProfileRow({
   );
 }
 
+type WorkTab = "claude" | "codex" | "share";
+
+/** The three top-level worlds. Claude + Codex manage their own profiles and
+ *  private content; Share is the cross-tool grid. Mirrors the segmented
+ *  control at the top of Claude Desktop's own sidebar. */
+function SegmentedTabs({
+  value,
+  onChange,
+}: {
+  value: WorkTab;
+  onChange: (t: WorkTab) => void;
+}) {
+  const tabs: { id: WorkTab; label: string; accent: string }[] = [
+    { id: "claude", label: "Claude", accent: "bg-primary" },
+    { id: "codex", label: "Codex", accent: "bg-foreground" },
+    { id: "share", label: "Share", accent: "" },
+  ];
+  return (
+    <div className="grid grid-cols-3 gap-0.5 rounded-lg bg-muted/60 p-0.5">
+      {tabs.map((t) => {
+        const active = value === t.id;
+        return (
+          <button
+            key={t.id}
+            type="button"
+            onClick={() => onChange(t.id)}
+            className={cn(
+              "flex items-center justify-center gap-1.5 rounded-md py-1.5 font-sans text-[12px] transition-colors",
+              active
+                ? "bg-background text-foreground shadow-sm"
+                : "text-muted-foreground hover:text-foreground",
+            )}
+          >
+            {t.accent ? (
+              <span className={cn("h-2 w-2 rounded-[2px]", t.accent)} />
+            ) : (
+              <Share2 className="h-3 w-3" />
+            )}
+            {t.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+const CLAUDE_KINDS: LibraryKind[] = [
+  "code_history",
+  "cowork_sessions",
+  "extensions",
+  "mcp_servers",
+  "cowork_skills",
+  "preferences",
+];
+
 export default function ContentLibraryPage() {
   const [installs, setInstalls] = useState<DesktopInstall[]>([]);
   const [codexInstalls, setCodexInstalls] = useState<CodexInstall[]>([]);
   const [codeInstalls, setCodeInstalls] = useState<CodeInstall[]>([]);
   const [visibleIds, setVisibleIds] = useState<Set<string>>(new Set());
+  const [activeTab, setActiveTab] = useState<WorkTab>("claude");
   const [activeKind, setActiveKind] = useState<LibraryKind>("code_history");
   const [rowsByKind, setRowsByKind] = useState<
     Partial<Record<LibraryKind, LibraryRow[]>>
@@ -677,6 +733,19 @@ export default function ContentLibraryPage() {
     [loadInstalls, push],
   );
 
+  const handleTabChange = useCallback((tab: WorkTab) => {
+    setActiveTab(tab);
+    setPending(new Map());
+    setSelection(null);
+    setClaudeAdding(false);
+    setCodexAdding(false);
+    if (tab === "share") {
+      setActiveKind("skills");
+    } else if (tab === "claude") {
+      setActiveKind((k) => (k === "skills" ? "code_history" : k));
+    }
+  }, []);
+
   const activeRows = rowsByKind[activeKind] ?? [];
   const selectedRowId =
     selection?.type === "row" ? selection.row.id : null;
@@ -685,154 +754,177 @@ export default function ContentLibraryPage() {
 
   return (
     <div className="flex min-h-0 flex-1">
-      {/* Left rail */}
+      {/* Left rail — 3 tool tabs at the very top, then the active tab's body */}
       <aside className="flex w-60 flex-col gap-3 border-r bg-card/30 py-4">
-        <div className="px-2">
-          <KindNav
-            value={activeKind}
-            onChange={(k) => {
-              setActiveKind(k);
-              setPending(new Map());
-              setSelection((current) =>
-                current?.type === "row" ? null : current,
-              );
-            }}
-            counts={counts}
-          />
+        <div className="px-3">
+          <SegmentedTabs value={activeTab} onChange={handleTabChange} />
         </div>
 
-        {/* CLAUDE world — its own "+" and the matrix-column checkboxes live
-         *  only here. KindNav above is Claude-scoped. */}
-        <div className="mx-2 border-t border-border/60 pt-2">
-          <SidebarRegion
-            label="Claude"
-            accent="claude"
-            caption="Sharing is among Claude profiles only."
-            count={`${visibleIds.size}/${installs.length}`}
-            adding={claudeAdding}
-            onAddToggle={() => {
-              setClaudeAdding((o) => !o);
-              setCodexAdding(false);
-            }}
-          >
-            {claudeAdding ? (
-              <AddProfileInput
-                value={claudeName}
-                onChange={setClaudeName}
-                onConfirm={() => handleCreate("claude", claudeName)}
-                onCancel={() => {
-                  setClaudeAdding(false);
-                  setClaudeName("");
-                }}
-                busy={busy}
-                hint="New Claude profile — sign in after first launch (quit other Claude windows first)."
-              />
-            ) : null}
-            {sortedInstalls.map((p) => (
-              <SidebarProfileRow
-                key={p.id}
-                profile={p}
-                visible={visibleIds.has(p.id)}
-                selected={selectedInstallId === p.id}
-                onToggleVisible={() => handleToggleVisible(p.id)}
-                onSelect={() => handleSelectProfile(p)}
-                onLaunch={() => handleLaunch(p)}
-                onDelete={(deleteData) => handleDeleteClaude(p, deleteData)}
-                busy={busy}
-              />
-            ))}
-          </SidebarRegion>
-        </div>
-
-        {/* Heavier wall: the two worlds are separate rooms, not one list. */}
-        <div className="mx-2 border-t-2 border-border pt-2">
-          <SidebarRegion
-            label="Codex"
-            accent="codex"
-            caption="Skills can be shared with Codex (Content → Skills); other content is Claude-only."
-            count={`${codexInstalls.length}`}
-            adding={codexAdding}
-            onAddToggle={() => {
-              setCodexAdding((o) => !o);
-              setClaudeAdding(false);
-            }}
-          >
-            {codexAdding ? (
-              <AddProfileInput
-                value={codexName}
-                onChange={setCodexName}
-                onConfirm={() => handleCreate("codex", codexName)}
-                onCancel={() => {
-                  setCodexAdding(false);
-                  setCodexName("");
-                }}
-                busy={busy}
-                hint="New Codex profile — sign in after first launch (quit other Codex windows first)."
-              />
-            ) : null}
-            {codexInstalls.length === 0 && !codexAdding ? (
-              <p className="px-3 py-2 font-sans text-[12px] text-muted-foreground/70">
-                No Codex profiles yet — + to add one.
-              </p>
-            ) : null}
-            {codexInstalls.map((c) => (
-              <div
-                key={c.id}
-                className={cn(
-                  "group flex items-center gap-1.5 rounded-md pl-1.5 pr-1 transition-colors",
-                  c.is_running ? "bg-primary/4" : "hover:bg-muted/60",
-                )}
-              >
-                <span className="relative ml-1 inline-flex h-2 w-2 shrink-0 items-center justify-center">
-                  {c.is_running ? (
-                    <>
-                      <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-primary/60" />
-                      <span className="relative inline-flex h-2 w-2 rounded-full bg-primary" />
-                    </>
-                  ) : (
-                    <span
-                      className={cn(
-                        "inline-block h-1.5 w-1.5 rounded-full",
-                        c.kind === "default" ? "bg-muted-foreground/60" : "bg-muted-foreground/30",
-                      )}
+        <div className="scrollbar-thin flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto">
+          {activeTab === "claude" ? (
+            <>
+              <div className="mx-2">
+                <SidebarRegion
+                  label="Claude"
+                  accent="claude"
+                  caption="Desktop + Code. Shares among Claude profiles."
+                  count={`${visibleIds.size}/${installs.length}`}
+                  adding={claudeAdding}
+                  onAddToggle={() => setClaudeAdding((o) => !o)}
+                >
+                  {claudeAdding ? (
+                    <AddProfileInput
+                      value={claudeName}
+                      onChange={setClaudeName}
+                      onConfirm={() => handleCreate("claude", claudeName)}
+                      onCancel={() => {
+                        setClaudeAdding(false);
+                        setClaudeName("");
+                      }}
+                      busy={busy}
+                      hint="New Claude profile — sign in after first launch (quit other Claude windows first)."
                     />
-                  )}
-                </span>
-                <span
-                  className={cn(
-                    "flex-1 truncate py-1.5 pl-1 font-sans text-[13px]",
-                    c.is_running && "font-medium",
-                  )}
-                  title={c.data_dir}
-                >
-                  {c.kind === "default" ? "Default" : c.name}
-                </span>
-                {c.is_running ? (
-                  <span className="mr-1 rounded-full bg-primary/15 px-1.5 py-0.5 font-sans text-[9px] uppercase tracking-wider text-primary">
-                    live
-                  </span>
-                ) : null}
-                <button
-                  type="button"
-                  onClick={() => handleLaunchCodex(c)}
-                  disabled={busy || c.is_running}
-                  className="shrink-0 rounded-md p-1 text-muted-foreground opacity-0 transition-all hover:bg-primary/10 hover:text-primary group-hover:opacity-100 disabled:cursor-not-allowed disabled:opacity-40"
-                  title={c.is_running ? `Codex ${c.name} is already running` : `Launch Codex ${c.name}`}
-                  aria-label={`Launch Codex ${c.name}`}
-                >
-                  <Play className="h-3 w-3" />
-                </button>
-                <DeleteProfileButton
-                  name={c.name}
-                  kind={c.kind}
-                  isRunning={c.is_running}
-                  world="codex"
-                  busy={busy}
-                  onDelete={(deleteData) => handleDeleteCodex(c, deleteData)}
+                  ) : null}
+                  {sortedInstalls.map((p) => (
+                    <SidebarProfileRow
+                      key={p.id}
+                      profile={p}
+                      visible={visibleIds.has(p.id)}
+                      selected={selectedInstallId === p.id}
+                      onToggleVisible={() => handleToggleVisible(p.id)}
+                      onSelect={() => handleSelectProfile(p)}
+                      onLaunch={() => handleLaunch(p)}
+                      onDelete={(deleteData) => handleDeleteClaude(p, deleteData)}
+                      busy={busy}
+                    />
+                  ))}
+                </SidebarRegion>
+              </div>
+              <div className="mx-2 border-t border-border/60 px-1 pt-3">
+                <KindNav
+                  value={activeKind}
+                  onChange={(k) => {
+                    setActiveKind(k);
+                    setPending(new Map());
+                    setSelection((current) => (current?.type === "row" ? null : current));
+                  }}
+                  counts={counts}
+                  only={CLAUDE_KINDS}
+                  heading="Content"
                 />
               </div>
-            ))}
-          </SidebarRegion>
+            </>
+          ) : null}
+
+          {activeTab === "codex" ? (
+            <div className="mx-2">
+              <SidebarRegion
+                label="Codex"
+                accent="codex"
+                caption="Launch & login. Skills shared via the Share tab."
+                count={`${codexInstalls.length}`}
+                adding={codexAdding}
+                onAddToggle={() => setCodexAdding((o) => !o)}
+              >
+                {codexAdding ? (
+                  <AddProfileInput
+                    value={codexName}
+                    onChange={setCodexName}
+                    onConfirm={() => handleCreate("codex", codexName)}
+                    onCancel={() => {
+                      setCodexAdding(false);
+                      setCodexName("");
+                    }}
+                    busy={busy}
+                    hint="New Codex profile — sign in after first launch (quit other Codex windows first)."
+                  />
+                ) : null}
+                {codexInstalls.length === 0 && !codexAdding ? (
+                  <p className="px-3 py-2 font-sans text-[12px] text-muted-foreground/70">
+                    No Codex profiles yet — + to add one.
+                  </p>
+                ) : null}
+                {codexInstalls.map((c) => (
+                  <div
+                    key={c.id}
+                    className={cn(
+                      "group flex items-center gap-1.5 rounded-md pl-1.5 pr-1 transition-colors",
+                      c.is_running ? "bg-primary/4" : "hover:bg-muted/60",
+                    )}
+                  >
+                    <span className="relative ml-1 inline-flex h-2 w-2 shrink-0 items-center justify-center">
+                      {c.is_running ? (
+                        <>
+                          <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-primary/60" />
+                          <span className="relative inline-flex h-2 w-2 rounded-full bg-primary" />
+                        </>
+                      ) : (
+                        <span
+                          className={cn(
+                            "inline-block h-1.5 w-1.5 rounded-full",
+                            c.kind === "default" ? "bg-muted-foreground/60" : "bg-muted-foreground/30",
+                          )}
+                        />
+                      )}
+                    </span>
+                    <span
+                      className={cn(
+                        "flex-1 truncate py-1.5 pl-1 font-sans text-[13px]",
+                        c.is_running && "font-medium",
+                      )}
+                      title={c.data_dir}
+                    >
+                      {c.kind === "default" ? "Default" : c.name}
+                    </span>
+                    {c.is_running ? (
+                      <span className="mr-1 rounded-full bg-primary/15 px-1.5 py-0.5 font-sans text-[9px] uppercase tracking-wider text-primary">
+                        live
+                      </span>
+                    ) : null}
+                    <button
+                      type="button"
+                      onClick={() => handleLaunchCodex(c)}
+                      disabled={busy || c.is_running}
+                      className="shrink-0 rounded-md p-1 text-muted-foreground opacity-0 transition-all hover:bg-primary/10 hover:text-primary group-hover:opacity-100 disabled:cursor-not-allowed disabled:opacity-40"
+                      title={c.is_running ? `Codex ${c.name} is already running` : `Launch Codex ${c.name}`}
+                      aria-label={`Launch Codex ${c.name}`}
+                    >
+                      <Play className="h-3 w-3" />
+                    </button>
+                    <DeleteProfileButton
+                      name={c.name}
+                      kind={c.kind}
+                      isRunning={c.is_running}
+                      world="codex"
+                      busy={busy}
+                      onDelete={(deleteData) => handleDeleteCodex(c, deleteData)}
+                    />
+                  </div>
+                ))}
+              </SidebarRegion>
+            </div>
+          ) : null}
+
+          {activeTab === "share" ? (
+            <div className="mx-2">
+              <KindNav
+                value={activeKind}
+                onChange={(k) => {
+                  setActiveKind(k);
+                  setPending(new Map());
+                  setSelection((current) => (current?.type === "row" ? null : current));
+                }}
+                counts={counts}
+                only={["skills"]}
+                heading="Cross-tool sharing"
+              />
+              <p className="mt-1 flex items-start gap-1.5 px-3 font-sans text-[10px] leading-snug text-muted-foreground/70">
+                <span className="mt-0.5 h-2 w-2 shrink-0 rounded-[2px] bg-foreground" />
+                Skills (SKILL.md) is the one library Claude and Codex share. MCP
+                (JSON↔TOML) is coming later.
+              </p>
+            </div>
+          ) : null}
         </div>
       </aside>
 
@@ -859,34 +951,47 @@ export default function ContentLibraryPage() {
           </div>
         ) : null}
 
-        {KIND_SCOPE_CAPTION[activeKind] ? (
-          <div className="flex items-center gap-2 rounded-md border border-border/60 bg-muted/30 px-3 py-1.5 font-sans text-[11px] text-muted-foreground">
-            {activeKind === "skills" ? (
-              <span className="h-2 w-2 shrink-0 rounded-[2px] bg-foreground" />
-            ) : null}
-            {KIND_SCOPE_CAPTION[activeKind]}
-          </div>
-        ) : null}
-
-        {matrixColumns.length === 0 ? (
-          <div className="flex flex-1 items-center justify-center text-muted-foreground">
-            <p className="font-sans text-sm">
-              {activeKind === "skills"
-                ? "No Claude Code or Codex install found."
-                : "No profiles selected — toggle one on the left."}
+        {activeTab === "codex" ? (
+          <div className="flex flex-1 flex-col items-center justify-center gap-2 text-center text-muted-foreground">
+            <span className="h-3 w-3 rounded-[3px] bg-foreground" />
+            <p className="font-sans text-sm">Codex — launch & login management.</p>
+            <p className="max-w-xs font-sans text-[12px] text-muted-foreground/70">
+              Add, launch, or delete Codex profiles on the left. Codex shares one
+              global skills library — manage it in the <b>Share</b> tab.
             </p>
           </div>
         ) : (
-          <Matrix
-            rows={activeRows}
-            profiles={matrixColumns}
-            pending={pending}
-            onCellToggle={handleCellToggle}
-            onRowSelect={handleSelectRow}
-            selectedRowId={selectedRowId}
-            loading={loadingKind === activeKind}
-            emptyHint={EMPTY_HINTS[activeKind]}
-          />
+          <>
+            {KIND_SCOPE_CAPTION[activeKind] ? (
+              <div className="flex items-center gap-2 rounded-md border border-border/60 bg-muted/30 px-3 py-1.5 font-sans text-[11px] text-muted-foreground">
+                {activeKind === "skills" ? (
+                  <span className="h-2 w-2 shrink-0 rounded-[2px] bg-foreground" />
+                ) : null}
+                {KIND_SCOPE_CAPTION[activeKind]}
+              </div>
+            ) : null}
+
+            {matrixColumns.length === 0 ? (
+              <div className="flex flex-1 items-center justify-center text-muted-foreground">
+                <p className="font-sans text-sm">
+                  {activeKind === "skills"
+                    ? "No Claude Code or Codex install found."
+                    : "No Claude profiles checked — toggle one on the left."}
+                </p>
+              </div>
+            ) : (
+              <Matrix
+                rows={activeRows}
+                profiles={matrixColumns}
+                pending={pending}
+                onCellToggle={handleCellToggle}
+                onRowSelect={handleSelectRow}
+                selectedRowId={selectedRowId}
+                loading={loadingKind === activeKind}
+                emptyHint={EMPTY_HINTS[activeKind]}
+              />
+            )}
+          </>
         )}
       </main>
 
