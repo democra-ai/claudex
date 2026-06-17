@@ -391,7 +391,7 @@ export default function ContentLibraryPage() {
   // wants) so we never parse an ambiguous colon-joined key — install ids are
   // namespaced (claude-code:default, profile:<name>, codex:profile:<name>) and
   // some row ids contain colons (preferences "scope:key"), so any string split
-  // would corrupt them. The key uses a   delimiter that can't collide.
+  // would corrupt them. The key uses a  delimiter that can't collide.
   const [pending, setPending] = useState<Map<string, PendingChange>>(new Map());
   const [selection, setSelection] = useState<Selection>(null);
   const [busy, setBusy] = useState(false);

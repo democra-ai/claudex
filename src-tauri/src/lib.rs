@@ -3626,9 +3626,10 @@ fn compact_value_preview(v: &serde_json::Value) -> String {
 ///     AND no present cell has a different digest
 ///   - diverged (copy kinds only): another present cell has a different digest
 ///   - independent: present, but nothing else aligns
-fn compute_row_states(row: &mut LibraryRow, supports_symlink: bool) {
+/// Copy-mode state (digest-based copied/diverged/independent). Symlink kinds use
+/// `symlink_share_states` (path-based, bidirectional) instead.
+fn compute_row_states(row: &mut LibraryRow) {
     let mut digest_counts: HashMap<String, usize> = HashMap::new();
-    let mut link_counts: HashMap<String, usize> = HashMap::new();
     let mut present_total = 0_usize;
 
     for cell in &row.cells {
@@ -3639,24 +3640,11 @@ fn compute_row_states(row: &mut LibraryRow, supports_symlink: bool) {
         if let Some(d) = &cell.digest {
             *digest_counts.entry(d.clone()).or_insert(0) += 1;
         }
-        if let Some(d) = &cell.link_target_digest {
-            *link_counts.entry(d.clone()).or_insert(0) += 1;
-        }
     }
 
     for cell in &mut row.cells {
         if !cell.present {
             cell.state = "absent".into();
-            continue;
-        }
-        if supports_symlink {
-            if let Some(d) = &cell.link_target_digest {
-                if link_counts.get(d).copied().unwrap_or(0) >= 2 {
-                    cell.state = "shared".into();
-                    continue;
-                }
-            }
-            cell.state = "independent".into();
             continue;
         }
         // Copy semantics.
@@ -3699,22 +3687,31 @@ pub fn list_extensions_library_grid() -> Result<Vec<LibraryRow>, String> {
         per_install.push((install, exts));
     }
 
-    let mut rows: Vec<LibraryRow> = ids
+    let rows: Vec<LibraryRow> = ids
         .into_keys()
         .map(|id| {
+            // Per-cell on-disk path (the extension dir) drives the share state.
+            let paths: Vec<PathBuf> = per_install
+                .iter()
+                .map(|(install, _)| Path::new(&install.data_dir).join(EXT_DIR_NAME).join(&id))
+                .collect();
+            let present: Vec<bool> = per_install
+                .iter()
+                .map(|(_, exts)| exts.iter().any(|e| e.id == id))
+                .collect();
+            let states = symlink_share_states(&paths, &present);
             let cells = per_install
                 .iter()
-                .map(|(install, exts)| {
+                .enumerate()
+                .map(|(i, (install, exts))| {
                     let entry = exts.iter().find(|e| e.id == id);
-                    let dir = Path::new(&install.data_dir).join(EXT_DIR_NAME).join(&id);
-                    let link_d = symlink_target_digest(&dir);
                     LibraryCell {
                         install_id: install.id.clone(),
                         install_name: install.name.clone(),
                         data_dir: install.data_dir.clone(),
                         kind: install.kind.clone(),
-                        state: String::new(),
-                        present: entry.is_some(),
+                        state: states[i].to_string(),
+                        present: present[i],
                         detail: entry.map(|e| {
                             if e.has_settings {
                                 "files+settings".into()
@@ -3723,7 +3720,7 @@ pub fn list_extensions_library_grid() -> Result<Vec<LibraryRow>, String> {
                             }
                         }),
                         digest: None,
-                        link_target_digest: link_d,
+                        link_target_digest: symlink_target_digest(&paths[i]),
                     }
                 })
                 .collect();
@@ -3738,9 +3735,6 @@ pub fn list_extensions_library_grid() -> Result<Vec<LibraryRow>, String> {
         })
         .collect();
 
-    for row in &mut rows {
-        compute_row_states(row, true);
-    }
     Ok(rows)
 }
 
@@ -3798,7 +3792,7 @@ pub fn list_mcp_library() -> Result<Vec<LibraryRow>, String> {
         .collect();
 
     for row in &mut rows {
-        compute_row_states(row, false);
+        compute_row_states(row);
     }
     Ok(rows)
 }
@@ -3843,38 +3837,53 @@ pub fn list_cowork_skills_library() -> Result<Vec<LibraryRow>, String> {
         }
     }
 
-    let mut rows: Vec<LibraryRow> = ids
+    let rows: Vec<LibraryRow> = ids
         .into_iter()
         .map(|(id, (name, desc, creator))| {
-            let cells = per_install
+            // Per-cell skill path (combo/skills/<id>) drives the share state.
+            let paths: Vec<PathBuf> = per_install
                 .iter()
-                .map(|(install, combo, manifest)| {
-                    let entry_owned = manifest_skill_entries(manifest)
+                .enumerate()
+                .map(|(i, (install, combo, _))| match combo {
+                    Some(c) => c.join(SKILLS_SUBDIR).join(&id),
+                    None => PathBuf::from(&install.data_dir).join(format!("__no_combo_{i}")),
+                })
+                .collect();
+            let entries: Vec<Option<serde_json::Value>> = per_install
+                .iter()
+                .map(|(_, _, manifest)| {
+                    manifest_skill_entries(manifest)
                         .into_iter()
                         .find(|e| entry_skill_id(e) == Some(&id))
-                        .cloned();
-                    let (present, detail, digest, link_d) = match entry_owned {
+                        .cloned()
+                })
+                .collect();
+            let present: Vec<bool> = entries.iter().map(|e| e.is_some()).collect();
+            let states = symlink_share_states(&paths, &present);
+            let cells = per_install
+                .iter()
+                .enumerate()
+                .map(|(i, (install, _, _))| {
+                    let (detail, digest) = match &entries[i] {
                         Some(entry) => {
-                            let enabled = entry_enabled(&entry);
-                            let detail = if enabled { "enabled" } else { "disabled" };
-                            let d = value_digest(&entry);
-                            let link_d = combo.as_ref().and_then(|c| {
-                                symlink_target_digest(&c.join(SKILLS_SUBDIR).join(&id))
-                            });
-                            (true, Some(detail.into()), Some(d), link_d)
+                            let enabled = entry_enabled(entry);
+                            (
+                                Some(if enabled { "enabled" } else { "disabled" }.to_string()),
+                                Some(value_digest(entry)),
+                            )
                         }
-                        None => (false, None, None, None),
+                        None => (None, None),
                     };
                     LibraryCell {
                         install_id: install.id.clone(),
                         install_name: install.name.clone(),
                         data_dir: install.data_dir.clone(),
                         kind: install.kind.clone(),
-                        state: String::new(),
-                        present,
+                        state: states[i].to_string(),
+                        present: present[i],
                         detail,
                         digest,
-                        link_target_digest: link_d,
+                        link_target_digest: symlink_target_digest(&paths[i]),
                     }
                 })
                 .collect();
@@ -3893,10 +3902,7 @@ pub fn list_cowork_skills_library() -> Result<Vec<LibraryRow>, String> {
             }
         })
         .collect();
-
-    for row in &mut rows {
-        compute_row_states(row, true);
-    }
+    let mut rows = rows;
     // Group Anthropic-shipped skills first, third-party next, unknown last.
     rows.sort_by_key(|r| match r.group.as_deref() {
         Some("Anthropic skills") => 0,
@@ -3979,7 +3985,7 @@ pub fn list_preferences_library() -> Result<Vec<LibraryRow>, String> {
     }
 
     for row in &mut rows {
-        compute_row_states(row, false);
+        compute_row_states(row);
     }
     Ok(rows)
 }
@@ -4059,68 +4065,70 @@ pub fn list_skills_library() -> Result<Vec<LibraryRow>, String> {
     }
     collect(&codex_dir);
 
+    let is_present = |p: &Path| {
+        p.is_dir()
+            || fs::symlink_metadata(p)
+                .map(|m| m.file_type().is_symlink())
+                .unwrap_or(false)
+    };
     let mut rows = Vec::new();
     for name in names {
-        let claude_cells: Vec<LibraryCell> = claude_cols
+        // All columns in one share-state pass: the Claude code dirs PLUS the
+        // single global Codex dir. Bidirectional detection means the real-source
+        // column reads "shared" too (not just the symlink target).
+        let mut paths: Vec<PathBuf> = claude_cols.iter().map(|(_, _, d)| d.join(&name)).collect();
+        paths.push(codex_dir.join(&name));
+        let present: Vec<bool> = paths.iter().map(|p| is_present(p)).collect();
+        let states = symlink_share_states(&paths, &present);
+
+        let mut cells: Vec<LibraryCell> = claude_cols
             .iter()
-            .map(|(id, label, dir)| {
-                let p = dir.join(&name);
-                let present = p.is_dir()
-                    || fs::symlink_metadata(&p)
-                        .map(|m| m.file_type().is_symlink())
-                        .unwrap_or(false);
-                LibraryCell {
-                    install_id: id.clone(),
-                    install_name: label.clone(),
-                    data_dir: dir.to_string_lossy().to_string(),
-                    kind: if id == "default" { "default".into() } else { "profile".into() },
-                    state: String::new(),
-                    present,
-                    detail: None,
-                    digest: None,
-                    link_target_digest: symlink_target_digest(&p),
-                }
+            .enumerate()
+            .map(|(i, (id, label, dir))| LibraryCell {
+                install_id: id.clone(),
+                install_name: label.clone(),
+                data_dir: dir.to_string_lossy().to_string(),
+                kind: if id == "default" { "default".into() } else { "profile".into() },
+                state: states[i].to_string(),
+                present: present[i],
+                detail: None,
+                digest: None,
+                link_target_digest: symlink_target_digest(&paths[i]),
             })
             .collect();
 
-        let mut row = LibraryRow {
-            id: name.clone(),
-            label: name.clone(),
-            description: None,
-            cells: claude_cells,
-            interactive: true,
-            group: Some("Claude + Codex skills".into()),
+        // The global Codex cell (last column). Add a hint when it's present but
+        // not part of the shared group (a real folder, or a foreign symlink).
+        let ci = claude_cols.len();
+        let codex_detail = if !present[ci] || states[ci] == "shared" {
+            None
+        } else if fs::symlink_metadata(&paths[ci])
+            .map(|m| m.file_type().is_symlink())
+            .unwrap_or(false)
+        {
+            Some("links elsewhere".to_string())
+        } else {
+            Some("real folder in ~/.codex/skills".to_string())
         };
-        compute_row_states(&mut row, true);
-
-        // One global Codex cell — link-only state computed locally.
-        let codex_path = codex_dir.join(&name);
-        let (present, state, detail) = match fs::symlink_metadata(&codex_path) {
-            Ok(meta) if meta.file_type().is_symlink() => {
-                let ours = claude_cols
-                    .iter()
-                    .any(|(_, _, d)| path_points_to(&codex_path, &d.join(&name)));
-                if ours {
-                    (true, "shared", None)
-                } else {
-                    (true, "independent", Some("links elsewhere".to_string()))
-                }
-            }
-            Ok(_) => (true, "independent", Some("real folder in ~/.codex/skills".to_string())),
-            Err(_) => (false, "absent", None),
-        };
-        row.cells.push(LibraryCell {
+        cells.push(LibraryCell {
             install_id: CODEX_SKILLS_GLOBAL_ID.to_string(),
             install_name: "Codex".to_string(),
             data_dir: codex_dir.to_string_lossy().to_string(),
             kind: "codex".to_string(),
-            state: state.to_string(),
-            present,
-            detail,
+            state: states[ci].to_string(),
+            present: present[ci],
+            detail: codex_detail,
             digest: None,
-            link_target_digest: None,
+            link_target_digest: symlink_target_digest(&paths[ci]),
         });
-        rows.push(row);
+        rows.push(LibraryRow {
+            id: name.clone(),
+            label: name,
+            description: None,
+            cells,
+            interactive: true,
+            group: Some("Claude + Codex skills".into()),
+        });
     }
     Ok(rows)
 }
@@ -4344,6 +4352,24 @@ pub fn list_codex_sessions_library() -> Result<Vec<LibraryRow>, String> {
         -latest
     });
 
+    // The share unit is the WHOLE <home>/sessions dir, so compute its share
+    // state once (bidirectional, over the per-column sessions dirs) and reuse it
+    // for every row.
+    let ws_paths: Vec<PathBuf> = cols
+        .iter()
+        .map(|c| c.home.join(CODEX_SESSIONS_DIR))
+        .collect();
+    let ws_present: Vec<bool> = ws_paths
+        .iter()
+        .map(|p| {
+            p.is_dir()
+                || fs::symlink_metadata(p)
+                    .map(|m| m.file_type().is_symlink())
+                    .unwrap_or(false)
+        })
+        .collect();
+    let ws_states = symlink_share_states(&ws_paths, &ws_present);
+
     let mut rows: Vec<LibraryRow> = Vec::with_capacity(keys.len() + 1);
 
     // Synthetic whole-sessions share row.
@@ -4368,15 +4394,15 @@ pub fn list_codex_sessions_library() -> Result<Vec<LibraryRow>, String> {
                 install_name: c.label.clone(),
                 data_dir: c.home.join(CODEX_SESSIONS_DIR).to_string_lossy().to_string(),
                 kind: c.kind.clone(),
-                state: String::new(),
-                present: n > 0,
+                state: if ws_present[i] { ws_states[i].to_string() } else { "absent".to_string() },
+                present: ws_present[i],
                 detail,
                 digest: None,
                 link_target_digest: link_d.clone(),
             }
         })
         .collect();
-    let mut all_row = LibraryRow {
+    let all_row = LibraryRow {
         id: CODEX_ALL_SESSIONS_ID.to_string(),
         label: "All Codex sessions".into(),
         description: Some("Toggle to symlink the whole ~/.codex/sessions dir between accounts.".into()),
@@ -4384,7 +4410,6 @@ pub fn list_codex_sessions_library() -> Result<Vec<LibraryRow>, String> {
         interactive: true,
         group: Some("Sessions".into()),
     };
-    compute_row_states(&mut all_row, /* supports_symlink */ true);
     rows.push(all_row);
 
     // One browse row per project (cwd).
@@ -4413,7 +4438,9 @@ pub fn list_codex_sessions_library() -> Result<Vec<LibraryRow>, String> {
                     install_name: c.label.clone(),
                     data_dir: c.home.join(CODEX_SESSIONS_DIR).to_string_lossy().to_string(),
                     kind: c.kind.clone(),
-                    state: String::new(),
+                    // Sharing is whole-sessions-dir; a project cell shows the
+                    // workspace share state when it has sessions here, else absent.
+                    state: if n > 0 { ws_states[i].to_string() } else { "absent".to_string() },
                     present: n > 0,
                     detail,
                     digest: None,
@@ -4435,16 +4462,14 @@ pub fn list_codex_sessions_library() -> Result<Vec<LibraryRow>, String> {
         } else {
             Some(key.replace(&home, "~"))
         };
-        let mut row = LibraryRow {
+        rows.push(LibraryRow {
             id: key,
             label,
             description,
             cells,
             interactive: false,
             group: Some("Projects".into()),
-        };
-        compute_row_states(&mut row, /* supports_symlink */ true);
-        rows.push(row);
+        });
     }
 
     rows.sort_by_key(|r| match r.group.as_deref() {
@@ -4568,13 +4593,15 @@ fn apply_codex_sessions_share(change: &LibraryCellChange) -> Result<bool, String
     }
 }
 
-/// Per-skill share states for the Codex matrix. A cell is "shared" when it is
-/// in a symlink relationship with another PRESENT column — either it links INTO
-/// another column's skill (target side) or another column links into IT (real
-/// source side). Bidirectional, unlike compute_row_states' symlink mode, whose
-/// ">=2 cells with the same link digest" rule never fires for the real-source +
-/// single-symlink topology that apply_codex_skill_share actually creates.
-fn codex_skill_share_states(paths: &[PathBuf], present: &[bool]) -> Vec<&'static str> {
+/// Share state for ANY symlink-mode kind, computed from the cells' actual
+/// on-disk paths. A present cell is "shared" when it's in a symlink relationship
+/// (either direction) with at least one other present cell — i.e. it links into
+/// a sibling, OR a sibling links into it. This is the bidirectional rule that
+/// correctly reads the real-source + single-symlink topology that every apply_*
+/// function creates; compute_row_states' old digest-count rule (">=2 cells with
+/// the same link digest") missed it, leaving genuinely-shared profiles showing
+/// as "independent". Inputs are per-cell paths + present flags, parallel arrays.
+fn symlink_share_states(paths: &[PathBuf], present: &[bool]) -> Vec<&'static str> {
     (0..paths.len())
         .map(|i| {
             if !present[i] {
@@ -4632,7 +4659,7 @@ pub fn list_codex_skills_library() -> Result<Vec<LibraryRow>, String> {
                         .unwrap_or(false)
             })
             .collect();
-        let states = codex_skill_share_states(&paths, &present);
+        let states = symlink_share_states(&paths, &present);
         let cells = cols
             .iter()
             .enumerate()
@@ -4700,7 +4727,7 @@ pub fn list_codex_mcp_library() -> Result<Vec<LibraryRow>, String> {
             interactive: true,
             group: Some("Codex MCP".into()),
         };
-        compute_row_states(&mut row, false);
+        compute_row_states(&mut row);
         rows.push(row);
     }
     Ok(rows)
@@ -5106,7 +5133,7 @@ pub fn list_mcp_cross_library() -> Result<Vec<LibraryRow>, String> {
             interactive: true,
             group: Some("Claude Code + Codex MCP".into()),
         };
-        compute_row_states(&mut row, false); // copy semantics, no symlinks
+        compute_row_states(&mut row); // copy semantics, no symlinks
         rows.push(row);
     }
     Ok(rows)
@@ -5320,12 +5347,12 @@ fn memory_present(p: &Path) -> bool {
 }
 
 /// The Memory matrix: a single row, one column per account (Claude code dirs +
-/// Codex homes). Symlink-share, bidirectional state via codex_skill_share_states.
+/// Codex homes). Symlink-share, bidirectional state via symlink_share_states.
 pub fn list_memory_library() -> Result<Vec<LibraryRow>, String> {
     let cols = memory_columns()?;
     let paths: Vec<PathBuf> = cols.iter().map(|c| c.path.clone()).collect();
     let present: Vec<bool> = paths.iter().map(|p| memory_present(p)).collect();
-    let states = codex_skill_share_states(&paths, &present);
+    let states = symlink_share_states(&paths, &present);
     let cells = cols
         .iter()
         .enumerate()
@@ -5761,7 +5788,10 @@ enum SessionKind {
 
 fn list_session_library(kind: SessionKind) -> Result<Vec<LibraryRow>, String> {
     let installs = list_desktop_installs()?;
-    let mut per_install: Vec<(DesktopInstall, Vec<LocalSession>, Option<String>)> =
+    // (install, sessions, workspace_path). The workspace path is the share unit
+    // for the code panel (per-account symlink target); Cowork agent mode has no
+    // workspace symlink, so None.
+    let mut per_install: Vec<(DesktopInstall, Vec<LocalSession>, Option<PathBuf>)> =
         Vec::with_capacity(installs.len());
 
     for install in installs {
@@ -5771,22 +5801,50 @@ fn list_session_library(kind: SessionKind) -> Result<Vec<LibraryRow>, String> {
             SessionKind::CoworkAgent => cowork_sessions_root(&data_dir),
         };
         let sessions = scan_sessions_under(&root);
-
-        // Workspace symlink digest — shared with the existing code-history
-        // sharing logic. Only meaningful for the code panel; cowork agent
-        // mode is per-account, not per-workspace.
-        let link_d = match kind {
-            SessionKind::CodePanel => {
-                let ws = read_workspace_identity(&data_dir).unwrap_or(None);
-                ws.as_ref()
-                    .map(|w| desktop_code_workspace_path(&data_dir, w))
-                    .as_deref()
-                    .and_then(symlink_target_digest)
-            }
+        let ws_path = match kind {
+            SessionKind::CodePanel => read_workspace_identity(&data_dir)
+                .unwrap_or(None)
+                .map(|w| desktop_code_workspace_path(&data_dir, &w)),
             SessionKind::CoworkAgent => None,
         };
-        per_install.push((install, sessions, link_d));
+        per_install.push((install, sessions, ws_path));
     }
+
+    // Whole-workspace share state (code panel only), computed once over the
+    // per-install workspace paths via the bidirectional detector. Installs with
+    // no workspace get a non-existent sentinel so they read independent/absent.
+    let ws_paths: Vec<PathBuf> = per_install
+        .iter()
+        .enumerate()
+        .map(|(i, (inst, _, ws))| {
+            ws.clone()
+                .unwrap_or_else(|| PathBuf::from(&inst.data_dir).join(format!("__no_ws_{i}")))
+        })
+        .collect();
+    let ws_present: Vec<bool> = per_install
+        .iter()
+        .map(|(_, _, ws)| {
+            ws.as_ref()
+                .map(|p| {
+                    p.is_dir()
+                        || fs::symlink_metadata(p)
+                            .map(|m| m.file_type().is_symlink())
+                            .unwrap_or(false)
+                })
+                .unwrap_or(false)
+        })
+        .collect();
+    let ws_states = symlink_share_states(&ws_paths, &ws_present);
+    // Per-cell share state for a present cell, given its column index.
+    let cell_state = |i: usize, present: bool| -> String {
+        if !present {
+            "absent".to_string()
+        } else if matches!(kind, SessionKind::CodePanel) && ws_present[i] {
+            ws_states[i].to_string()
+        } else {
+            "independent".to_string()
+        }
+    };
 
     // Group by "project key" — for code-panel that's `cwd`, for cowork
     // agent that's `processName` (the VM name).
@@ -5827,7 +5885,8 @@ fn list_session_library(kind: SessionKind) -> Result<Vec<LibraryRow>, String> {
     if matches!(kind, SessionKind::CodePanel) {
         let cells: Vec<LibraryCell> = per_install
             .iter()
-            .map(|(install, sessions, link_d)| {
+            .enumerate()
+            .map(|(i, (install, sessions, ws_path))| {
                 let n = sessions.len();
                 let last = sessions.iter().map(|s| s.last_activity_ms).max().unwrap_or(0);
                 let detail = if n > 0 {
@@ -5844,15 +5903,15 @@ fn list_session_library(kind: SessionKind) -> Result<Vec<LibraryRow>, String> {
                     install_name: install.name.clone(),
                     data_dir: install.data_dir.clone(),
                     kind: install.kind.clone(),
-                    state: String::new(),
+                    state: cell_state(i, n > 0),
                     present: n > 0,
                     detail,
                     digest: None,
-                    link_target_digest: link_d.clone(),
+                    link_target_digest: ws_path.as_deref().and_then(symlink_target_digest),
                 }
             })
             .collect();
-        let mut summary = LibraryRow {
+        rows.push(LibraryRow {
             id: "__workspace__".into(),
             label: "Whole workspace".into(),
             description: Some(
@@ -5861,23 +5920,28 @@ fn list_session_library(kind: SessionKind) -> Result<Vec<LibraryRow>, String> {
             cells,
             interactive: true,
             group: Some("Workspace".into()),
-        };
-        compute_row_states(&mut summary, /* supports_symlink */ true);
-        rows.push(summary);
+        });
     }
 
     // One row per cwd / processName.
     for key in keys {
         let cells: Vec<LibraryCell> = per_install
             .iter()
-            .map(|(install, sessions, link_d)| {
-                let matching: Vec<&LocalSession> = sessions
+            .enumerate()
+            .map(|(i, (install, sessions, ws_path))| {
+                let matching_owned: Vec<LocalSession> = sessions
                     .iter()
                     .filter(|s| project_key(s, kind).as_deref() == Some(key.as_str()))
+                    .cloned()
                     .collect();
-                let matching_owned: Vec<LocalSession> =
-                    matching.iter().map(|s| (*s).clone()).collect();
-                build_session_cell(install, &matching_owned, link_d.clone())
+                let present = !matching_owned.is_empty();
+                let mut cell = build_session_cell(
+                    install,
+                    &matching_owned,
+                    ws_path.as_deref().and_then(symlink_target_digest),
+                );
+                cell.state = cell_state(i, present);
+                cell
             })
             .collect();
 
@@ -5945,7 +6009,7 @@ fn list_session_library(kind: SessionKind) -> Result<Vec<LibraryRow>, String> {
             SessionKind::CodePanel if key.contains("/.claude/worktrees/") => "Cowork worktrees",
             SessionKind::CodePanel => "Projects",
         };
-        let mut row = LibraryRow {
+        rows.push(LibraryRow {
             id: key,
             label,
             description,
@@ -5957,9 +6021,7 @@ fn list_session_library(kind: SessionKind) -> Result<Vec<LibraryRow>, String> {
             // rows to inspect individual sessions in the DetailSheet.
             interactive: false,
             group: Some(group_label.to_string()),
-        };
-        compute_row_states(&mut row, /* supports_symlink */ true);
-        rows.push(row);
+        });
     }
 
     // Sort so rows in the same group are contiguous. Stable, so within-group
@@ -7909,25 +7971,31 @@ mod tests {
     }
 
     #[test]
-    fn compute_row_states_symlink_groups_two_or_more_as_shared() {
-        let mut row = LibraryRow {
-            id: "ext-a".into(),
-            label: "ext-a".into(),
-            description: None,
-            cells: vec![
-                make_cell("a", true, None, Some("link-X")),
-                make_cell("b", true, None, Some("link-X")),
-                make_cell("c", true, None, Some("link-Y")),
-                make_cell("d", false, None, None),
-            ],
-            interactive: true,
-            group: None,
-        };
-        compute_row_states(&mut row, /* supports_symlink */ true);
-        assert_eq!(row.cells[0].state, "shared");
-        assert_eq!(row.cells[1].state, "shared");
-        assert_eq!(row.cells[2].state, "independent"); // only one in its link group
-        assert_eq!(row.cells[3].state, "absent");
+    fn symlink_share_states_partial_group_and_transitive() {
+        // A real source dir + two symlinks into it (B,C), plus an independent D
+        // and an absent E. All of A/B/C must read "shared".
+        let a = tempfile::tempdir().unwrap();
+        let b = tempfile::tempdir().unwrap();
+        let c = tempfile::tempdir().unwrap();
+        let d = tempfile::tempdir().unwrap();
+        let pa = a.path().join("x");
+        fs::create_dir_all(&pa).unwrap();
+        let pb = b.path().join("x");
+        std::os::unix::fs::symlink(&pa, &pb).unwrap();
+        let pc = c.path().join("x");
+        std::os::unix::fs::symlink(&pa, &pc).unwrap();
+        let pd = d.path().join("x");
+        fs::create_dir_all(&pd).unwrap(); // real, no link relationship
+        let pe = a.path().join("absent");
+
+        let paths = vec![pa, pb, pc, pd, pe];
+        let present = vec![true, true, true, true, false];
+        let s = symlink_share_states(&paths, &present);
+        assert_eq!(s[0], "shared", "real source");
+        assert_eq!(s[1], "shared", "symlink B");
+        assert_eq!(s[2], "shared", "symlink C (transitive group)");
+        assert_eq!(s[3], "independent", "unrelated real dir");
+        assert_eq!(s[4], "absent");
     }
 
     #[test]
@@ -7945,7 +8013,7 @@ mod tests {
             interactive: true,
             group: None,
         };
-        compute_row_states(&mut row, /* supports_symlink */ false);
+        compute_row_states(&mut row);
         // a and b have the same digest, but c diverges — everybody present
         // that has a sibling is "diverged" because at least one other present
         // cell has a different digest.
@@ -7968,7 +8036,7 @@ mod tests {
             interactive: true,
             group: None,
         };
-        compute_row_states(&mut row, false);
+        compute_row_states(&mut row);
         assert_eq!(row.cells[0].state, "independent");
         assert_eq!(row.cells[1].state, "absent");
     }
@@ -7987,7 +8055,7 @@ mod tests {
             interactive: true,
             group: None,
         };
-        compute_row_states(&mut row, false);
+        compute_row_states(&mut row);
         assert_eq!(row.cells[0].state, "copied");
         assert_eq!(row.cells[1].state, "copied");
         assert_eq!(row.cells[2].state, "absent");
@@ -8111,7 +8179,7 @@ mod tests {
     }
 
     #[test]
-    fn codex_skill_share_states_real_source_plus_symlink_reads_shared_on_both() {
+    fn symlink_share_states_real_source_plus_symlink_reads_shared_on_both() {
         // Topology that apply_codex_skill_share creates: profile A holds a real
         // skill dir, profile B symlinks into it. Both must read "shared".
         let a = tempfile::tempdir().unwrap();
@@ -8125,14 +8193,14 @@ mod tests {
 
         let paths = vec![a_skill.clone(), b_skill.clone(), c_skill.clone()];
         let present = vec![true, true, false];
-        let states = codex_skill_share_states(&paths, &present);
+        let states = symlink_share_states(&paths, &present);
         assert_eq!(states[0], "shared", "real source must read shared");
         assert_eq!(states[1], "shared", "symlink target must read shared");
         assert_eq!(states[2], "absent", "missing column is absent");
 
         // A lone real dir with no link partner is independent, not shared.
         let lone = vec![a_skill, c.path().join("y")];
-        let states2 = codex_skill_share_states(&lone, &[true, false]);
+        let states2 = symlink_share_states(&lone, &[true, false]);
         assert_eq!(states2[0], "independent");
     }
 
@@ -8208,12 +8276,12 @@ mod tests {
         let paths = vec![claude_md.clone(), agents_md.clone()];
         let present = vec![memory_present(&claude_md), memory_present(&agents_md)];
         assert_eq!(present, vec![true, true], "both memory files present");
-        let states = codex_skill_share_states(&paths, &present);
+        let states = symlink_share_states(&paths, &present);
         assert_eq!(states[0], "shared", "CLAUDE.md source reads shared");
         assert_eq!(states[1], "shared", "AGENTS.md symlink reads shared");
         // A lone CLAUDE.md with no partner is independent.
         assert_eq!(
-            codex_skill_share_states(&[claude_md], &[true])[0],
+            symlink_share_states(&[claude_md], &[true])[0],
             "independent"
         );
     }
