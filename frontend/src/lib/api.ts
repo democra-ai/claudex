@@ -269,6 +269,31 @@ export const api = {
     return invoke("list_codex_sessions_for_project", { installId, cwd });
   },
 
+  // -------- Content view / edit / delete --------
+  readTextFile(path: string): Promise<string> {
+    return invoke("read_text_file", { path });
+  },
+  writeTextFile(path: string, content: string): Promise<void> {
+    return invoke("write_text_file", { path, content });
+  },
+  deleteContentPath(path: string): Promise<void> {
+    return invoke("delete_content_path", { path });
+  },
+  getSessionTranscript(
+    installId: string,
+    sessionId: string,
+    world: string,
+  ): Promise<string> {
+    return invoke("get_session_transcript", { installId, sessionId, world });
+  },
+  deleteSessionFile(
+    installId: string,
+    sessionId: string,
+    world: string,
+  ): Promise<void> {
+    return invoke("delete_session_file", { installId, sessionId, world });
+  },
+
   applyLibraryChanges(
     kind: LibraryKind,
     changes: LibraryCellChange[],

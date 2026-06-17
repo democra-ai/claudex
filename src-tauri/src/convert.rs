@@ -583,6 +583,76 @@ fn id_from_rollout_filename(path: &Path) -> String {
     }
 }
 
+/// Resolve a session's on-disk file by id within a home (codex rollout or claude
+/// jsonl). Returns the path as a String for the GUI's view/delete actions.
+pub fn resolve_session_file(needle: &str, home: &Path, world: &str) -> Option<String> {
+    let file = if world == "codex" {
+        resolve_codex_session(needle, home)
+    } else {
+        resolve_claude_session(needle, home)
+    }?;
+    Some(file.to_string_lossy().to_string())
+}
+
+/// Render a session (by id, within a home) to readable markdown for the viewer.
+pub fn session_transcript(needle: &str, home: &Path, world: &str) -> Result<String, String> {
+    let file = if world == "codex" {
+        resolve_codex_session(needle, home)
+    } else {
+        resolve_claude_session(needle, home)
+    }
+    .ok_or_else(|| format!("Session not found: {needle}"))?;
+    let ir = if world == "codex" {
+        parse_codex_rollout(&file)
+    } else {
+        parse_claude_session(&file)
+    };
+    Ok(render_ir_text(&ir))
+}
+
+/// Walk the IR into a compact, readable markdown transcript (read-only view).
+fn render_ir_text(ir: &Ir) -> String {
+    let mut out = String::new();
+    if !ir.cwd.is_empty() {
+        out.push_str(&format!("**cwd** `{}`", ir.cwd));
+    }
+    if let Some(m) = &ir.model {
+        out.push_str(&format!("  ·  **model** `{m}`"));
+    }
+    out.push_str("\n\n---\n\n");
+    for turn in &ir.turns {
+        let who = if turn.role == "user" { "🧑 User" } else { "🤖 Assistant" };
+        out.push_str(&format!("### {who}\n\n"));
+        for b in &turn.blocks {
+            match b {
+                Block::Text(t) => {
+                    out.push_str(t.trim());
+                    out.push_str("\n\n");
+                }
+                Block::Reasoning(t) => {
+                    out.push_str("> 🧠 ");
+                    out.push_str(t.trim().replace('\n', "\n> ").as_str());
+                    out.push_str("\n\n");
+                }
+                Block::ToolUse { name, input, .. } => {
+                    let arg = serde_json::to_string(input).unwrap_or_default();
+                    let arg = if arg.len() > 200 { format!("{}…", &arg[..200]) } else { arg };
+                    out.push_str(&format!("→ **{name}**(`{arg}`)\n\n"));
+                }
+                Block::ToolResult { output, is_error, .. } => {
+                    let o = if output.len() > 400 { format!("{}…", &output[..400]) } else { output.clone() };
+                    out.push_str(&format!(
+                        "← {}\n```\n{}\n```\n\n",
+                        if *is_error { "error" } else { "result" },
+                        o.trim()
+                    ));
+                }
+            }
+        }
+    }
+    out
+}
+
 fn resolve_codex_session(needle: &str, codex_home: &Path) -> Option<PathBuf> {
     if !needle.is_empty() && Path::new(needle).exists() {
         return Some(PathBuf::from(needle));

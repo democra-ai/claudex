@@ -1227,6 +1227,7 @@ export default function ContentLibraryPage() {
         onImportCodexSession={handleImportCodexSession}
         onExportClaudeSession={handleExportClaudeSession}
         transferBusy={importing}
+        onContentChanged={() => loadKind(activeKind)}
         onDeleteProfile={
           selection?.type === "profile"
             ? async (deleteData: boolean) => {

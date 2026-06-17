@@ -357,6 +357,96 @@ fn remove_data_dir(path: &Path) -> Result<(), String> {
     }
 }
 
+/// Validate a content file/dir path for read/write/delete: its parent must
+/// resolve to a real directory strictly UNDER $HOME (never $HOME itself or
+/// outside). Bounds all content editing to profile dirs; paths come from trusted
+/// matrix cell.data_dir values, this is defense-in-depth.
+fn guarded_file_path(raw: &str) -> Result<PathBuf, String> {
+    let home = home_dir()?;
+    let p = PathBuf::from(raw);
+    let parent = p.parent().ok_or_else(|| "Path has no parent directory.".to_string())?;
+    let fname = p.file_name().ok_or_else(|| "Path has no file name.".to_string())?;
+    let cparent = parent
+        .canonicalize()
+        .map_err(|e| format!("Resolve {}: {e}", parent.display()))?;
+    if cparent == home || !cparent.starts_with(&home) {
+        return Err(format!(
+            "Refusing to touch {} — not inside a profile directory.",
+            p.display()
+        ));
+    }
+    Ok(cparent.join(fname))
+}
+
+/// Read a content file (memory / SKILL.md / etc). Missing → "" (so the editor
+/// can seed an empty buffer for "create").
+pub fn read_text_file(path: String) -> Result<String, String> {
+    let p = guarded_file_path(&path)?;
+    match fs::read_to_string(&p) {
+        Ok(s) => Ok(s),
+        Err(e) if e.kind() == ErrorKind::NotFound => Ok(String::new()),
+        Err(e) => Err(format!("Read {}: {e}", p.display())),
+    }
+}
+
+/// Write a content file. Refuses to write THROUGH a symlink (a shared file) — the
+/// user must un-share first, so an edit never silently propagates to every linked
+/// account. Creates the parent + file when absent (memory "create-empty").
+pub fn write_text_file(path: String, content: String) -> Result<(), String> {
+    let p = guarded_file_path(&path)?;
+    if fs::symlink_metadata(&p)
+        .map(|m| m.file_type().is_symlink())
+        .unwrap_or(false)
+    {
+        return Err(
+            "This file is shared (a symlink) — un-share it first to edit it independently."
+                .to_string(),
+        );
+    }
+    if let Some(parent) = p.parent() {
+        fs::create_dir_all(parent).map_err(|e| format!("Create {}: {e}", parent.display()))?;
+    }
+    fs::write(&p, content).map_err(|e| format!("Write {}: {e}", p.display()))
+}
+
+/// Delete a content file or folder (a skill dir, a session file, a memory file).
+/// remove_path unlinks a symlink rather than touching its target.
+pub fn delete_content_path(path: String) -> Result<(), String> {
+    let p = guarded_file_path(&path)?;
+    remove_path(&p)
+}
+
+/// The home dir backing a session column id, for the given world.
+fn session_home_for(install_id: &str, world: &str) -> Result<PathBuf, String> {
+    if world == "codex" {
+        codex_home_for_column(install_id)?.ok_or_else(|| format!("Unknown Codex account: {install_id}"))
+    } else {
+        claude_config_for_column(install_id)?.ok_or_else(|| format!("Unknown Claude account: {install_id}"))
+    }
+}
+
+/// Read-only markdown transcript of one session (for the content viewer).
+pub fn get_session_transcript(
+    install_id: String,
+    session_id: String,
+    world: String,
+) -> Result<String, String> {
+    let home = session_home_for(&install_id, &world)?;
+    convert::session_transcript(&session_id, &home, &world)
+}
+
+/// Delete a single session file (guarded). Never the project dir.
+pub fn delete_session_file(
+    install_id: String,
+    session_id: String,
+    world: String,
+) -> Result<(), String> {
+    let home = session_home_for(&install_id, &world)?;
+    let file = convert::resolve_session_file(&session_id, &home, &world)
+        .ok_or_else(|| format!("Session not found: {session_id}"))?;
+    delete_content_path(file)
+}
+
 fn path_points_to(path: &Path, target: &Path) -> bool {
     let Ok(link) = fs::read_link(path) else {
         return false;
@@ -7370,6 +7460,39 @@ mod commands {
     }
 
     #[tauri::command]
+    pub fn read_text_file(path: String) -> Result<String, String> {
+        super::read_text_file(path)
+    }
+
+    #[tauri::command]
+    pub fn write_text_file(path: String, content: String) -> Result<(), String> {
+        super::write_text_file(path, content)
+    }
+
+    #[tauri::command]
+    pub fn delete_content_path(path: String) -> Result<(), String> {
+        super::delete_content_path(path)
+    }
+
+    #[tauri::command]
+    pub fn get_session_transcript(
+        install_id: String,
+        session_id: String,
+        world: String,
+    ) -> Result<String, String> {
+        super::get_session_transcript(install_id, session_id, world)
+    }
+
+    #[tauri::command]
+    pub fn delete_session_file(
+        install_id: String,
+        session_id: String,
+        world: String,
+    ) -> Result<(), String> {
+        super::delete_session_file(install_id, session_id, world)
+    }
+
+    #[tauri::command]
     pub fn list_mcp_cross_library() -> Result<Vec<LibraryRow>, String> {
         super::list_mcp_cross_library()
     }
@@ -7494,6 +7617,11 @@ pub fn run() {
             commands::list_claude_sessions_library,
             commands::list_claude_skills_library,
             commands::list_codex_preferences_library,
+            commands::read_text_file,
+            commands::write_text_file,
+            commands::delete_content_path,
+            commands::get_session_transcript,
+            commands::delete_session_file,
             commands::list_mcp_cross_library,
             commands::list_memory_library,
             commands::list_claude_memory_library,
