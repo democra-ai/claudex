@@ -636,11 +636,20 @@ fn render_ir_text(ir: &Ir) -> String {
                 }
                 Block::ToolUse { name, input, .. } => {
                     let arg = serde_json::to_string(input).unwrap_or_default();
-                    let arg = if arg.len() > 200 { format!("{}…", &arg[..200]) } else { arg };
+                    // Char-safe truncation — byte slicing panics mid-UTF-8 (CJK/emoji).
+                    let arg = if arg.chars().count() > 200 {
+                        format!("{}…", arg.chars().take(200).collect::<String>())
+                    } else {
+                        arg
+                    };
                     out.push_str(&format!("→ **{name}**(`{arg}`)\n\n"));
                 }
                 Block::ToolResult { output, is_error, .. } => {
-                    let o = if output.len() > 400 { format!("{}…", &output[..400]) } else { output.clone() };
+                    let o = if output.chars().count() > 400 {
+                        format!("{}…", output.chars().take(400).collect::<String>())
+                    } else {
+                        output.clone()
+                    };
                     out.push_str(&format!(
                         "← {}\n```\n{}\n```\n\n",
                         if *is_error { "error" } else { "result" },

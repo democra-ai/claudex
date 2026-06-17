@@ -182,7 +182,7 @@ const KIND_SCOPE_CAPTION: Partial<Record<LibraryKind, string>> = {
   codex_mcp:
     "MCP servers per Codex account (config.toml). Toggle a cell to copy a server between accounts.",
   claude_sessions:
-    "Claude Code CLI sessions (~/.claude/projects), one column per account. Toggle 'All Claude sessions' to symlink-share the whole dir; open a project to view or delete sessions.",
+    "Claude Code CLI sessions (~/.claude/projects), one column per account. Toggle 'All Claude sessions' to symlink-share the whole dir between accounts.",
   claude_skills:
     "Skills per Claude account (~/.claude/skills). Toggle a cell to share a skill between accounts (live symlink).",
   codex_preferences:

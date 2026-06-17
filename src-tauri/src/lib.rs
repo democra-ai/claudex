@@ -369,9 +369,18 @@ fn guarded_file_path(raw: &str) -> Result<PathBuf, String> {
     let cparent = parent
         .canonicalize()
         .map_err(|e| format!("Resolve {}: {e}", parent.display()))?;
-    if cparent == home || !cparent.starts_with(&home) {
+    // Must live under a MANAGED profile root — the first component below $HOME
+    // begins with ".claude" or ".codex". Bounds editing to our own dirs so a bad
+    // path can never reach ~/.ssh, ~/.aws, ~/Library, etc.
+    let first = cparent
+        .strip_prefix(&home)
+        .ok()
+        .and_then(|rel| rel.components().next())
+        .and_then(|c| c.as_os_str().to_str())
+        .unwrap_or("");
+    if !(first.starts_with(".claude") || first.starts_with(".codex")) {
         return Err(format!(
-            "Refusing to touch {} — not inside a profile directory.",
+            "Refusing to touch {} — not inside a Claude/Codex profile directory.",
             p.display()
         ));
     }
@@ -444,6 +453,16 @@ pub fn delete_session_file(
     let home = session_home_for(&install_id, &world)?;
     let file = convert::resolve_session_file(&session_id, &home, &world)
         .ok_or_else(|| format!("Session not found: {session_id}"))?;
+    // Hard guard: only ever delete a single regular session FILE, never a dir.
+    // (resolve's exists()-passthrough could otherwise return a project/sessions
+    // tree → recursive wipe.) Require a real file ending in .jsonl.
+    let p = Path::new(&file);
+    let is_file = fs::symlink_metadata(p)
+        .map(|m| m.is_file() || m.file_type().is_symlink())
+        .unwrap_or(false);
+    if !is_file || p.extension().and_then(|e| e.to_str()) != Some("jsonl") {
+        return Err("Refusing to delete — not a single session file.".to_string());
+    }
     delete_content_path(file)
 }
 
@@ -3791,13 +3810,17 @@ fn compact_value_preview(v: &serde_json::Value) -> String {
     match v {
         serde_json::Value::Bool(b) => if *b { "true".into() } else { "false".into() },
         serde_json::Value::Number(n) => n.to_string(),
-        serde_json::Value::String(s) => {
-            if s.len() > 60 { format!("{}…", &s[..60]) } else { s.clone() }
-        }
-        _ => {
-            let s = serde_json::to_string(v).unwrap_or_default();
-            if s.len() > 60 { format!("{}…", &s[..60]) } else { s }
-        }
+        serde_json::Value::String(s) => char_truncate(s, 60),
+        _ => char_truncate(&serde_json::to_string(v).unwrap_or_default(), 60),
+    }
+}
+
+/// Truncate to at most `n` characters (char-safe — byte slicing panics mid-UTF-8).
+fn char_truncate(s: &str, n: usize) -> String {
+    if s.chars().count() > n {
+        format!("{}…", s.chars().take(n).collect::<String>())
+    } else {
+        s.to_string()
     }
 }
 
@@ -9002,6 +9025,33 @@ mod tests {
         fs::create_dir_all(&managed).unwrap();
         assert!(remove_data_dir(&managed).is_ok());
         assert!(!managed.exists(), "managed dotdir should be removed");
+    }
+
+    #[test]
+    fn guarded_file_path_confines_to_claude_codex_roots() {
+        let home = home_dir().unwrap();
+        // A real managed root must exist for canonicalize to succeed; create one.
+        let claude = home.join(".claude");
+        fs::create_dir_all(&claude).ok();
+        // Accept a file under ~/.claude.
+        assert!(guarded_file_path(&claude.join("CLAUDE.md").to_string_lossy()).is_ok());
+        // Refuse ~/.ssh and friends (parent under home but not a managed root).
+        let ssh = home.join(".ssh");
+        fs::create_dir_all(&ssh).ok();
+        assert!(guarded_file_path(&ssh.join("id_rsa").to_string_lossy()).is_err());
+        // Refuse a file directly in $HOME.
+        assert!(guarded_file_path(&home.join("secret.txt").to_string_lossy()).is_err());
+    }
+
+    #[test]
+    fn char_truncate_is_utf8_safe() {
+        // Multibyte CJK + emoji must not panic when truncated at a byte boundary
+        // that splits a char.
+        let s = "日本語テキストの長い内容😀😀😀".repeat(20);
+        let t = char_truncate(&s, 5);
+        assert!(t.chars().count() <= 6); // 5 + the ellipsis
+        assert!(t.ends_with('…'));
+        assert_eq!(char_truncate("short", 60), "short");
     }
 
     #[test]
