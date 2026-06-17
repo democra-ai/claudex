@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Info, Play, Plus } from "lucide-react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { Info, Play, Plus, X } from "lucide-react";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -17,6 +17,125 @@ import { KindNav, computeKindCount } from "./KindNav";
 import { Matrix } from "./Matrix";
 import { DetailSheet, type Selection } from "./DetailSheet";
 import { PendingBar } from "./PendingBar";
+import { DeleteProfileButton } from "./DeleteProfileButton";
+
+/**
+ * A walled-off profile world (Claude / Codex). Each region owns a tinted
+ * sticky header with its accent swatch, a count, and its own "+" that adds
+ * a profile of THAT type — plus a one-line scope caption. The visual wall
+ * (accent tint + heavier divider between regions) is how we communicate that
+ * Claude and Codex share independently.
+ */
+function SidebarRegion({
+  label,
+  accent,
+  caption,
+  count,
+  adding,
+  onAddToggle,
+  children,
+}: {
+  label: string;
+  accent: "claude" | "codex";
+  caption: string;
+  count: string;
+  adding: boolean;
+  onAddToggle: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <div>
+      <div
+        className={cn(
+          "flex items-center justify-between rounded-md px-3 py-1.5",
+          accent === "claude" ? "bg-primary/5" : "bg-foreground/5",
+        )}
+      >
+        <div className="flex items-center gap-2">
+          <span
+            className={cn(
+              "h-2.5 w-2.5 rounded-[3px]",
+              accent === "claude" ? "bg-primary" : "bg-foreground",
+            )}
+          />
+          <span className="font-sans text-[10px] uppercase tracking-[0.14em] text-muted-foreground/80">
+            {label}
+          </span>
+        </div>
+        <div className="flex items-center gap-1.5">
+          <span className="font-mono text-[10px] tabular-nums text-muted-foreground/60">
+            {count}
+          </span>
+          <Button
+            type="button"
+            size="icon"
+            variant="ghost"
+            onClick={onAddToggle}
+            className="h-5 w-5 rounded"
+            aria-label={`Add ${label} profile`}
+            aria-expanded={adding}
+          >
+            {adding ? <X className="h-3 w-3" /> : <Plus className="h-3.5 w-3.5" />}
+          </Button>
+        </div>
+      </div>
+      <p className="px-3 pb-1 pt-0.5 font-sans text-[10px] leading-snug text-muted-foreground/60">
+        {caption}
+      </p>
+      <div className="space-y-0.5 px-1">{children}</div>
+    </div>
+  );
+}
+
+/** Inline name entry that slides into a region body when its "+" is clicked.
+ *  Enter confirms, Escape cancels. */
+function AddProfileInput({
+  value,
+  onChange,
+  onConfirm,
+  onCancel,
+  busy,
+  hint,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  onConfirm: () => void;
+  onCancel: () => void;
+  busy: boolean;
+  hint: string;
+}) {
+  return (
+    <div className="mb-1 px-1">
+      <div className="flex gap-1">
+        <Input
+          autoFocus
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && value.trim()) onConfirm();
+            if (e.key === "Escape") onCancel();
+          }}
+          placeholder="profile name"
+          className="h-7 font-sans text-xs"
+          disabled={busy}
+        />
+        <Button
+          type="button"
+          size="icon"
+          onClick={onConfirm}
+          disabled={busy || !value.trim()}
+          className="h-7 w-7"
+          aria-label="Create profile"
+        >
+          <Plus className="h-3.5 w-3.5" />
+        </Button>
+      </div>
+      <p className="px-1 pt-1 font-sans text-[10px] leading-snug text-muted-foreground/70">
+        {hint}
+      </p>
+    </div>
+  );
+}
 
 const EMPTY_HINTS: Record<LibraryKind, string> = {
   code_history: "No Cowork code sessions yet in any profile.",
@@ -34,6 +153,7 @@ interface SidebarProfileRowProps {
   onToggleVisible: () => void;
   onSelect: () => void;
   onLaunch: () => void;
+  onDelete: (deleteData: boolean) => Promise<void>;
   busy: boolean;
 }
 
@@ -44,6 +164,7 @@ function SidebarProfileRow({
   onToggleVisible,
   onSelect,
   onLaunch,
+  onDelete,
   busy,
 }: SidebarProfileRowProps) {
   const running = profile.is_running;
@@ -118,6 +239,14 @@ function SidebarProfileRow({
       >
         <Play className="h-3 w-3" />
       </button>
+      <DeleteProfileButton
+        name={profile.name}
+        kind={profile.kind}
+        isRunning={running}
+        world="claude"
+        busy={busy}
+        onDelete={onDelete}
+      />
     </div>
   );
 }
@@ -135,7 +264,11 @@ export default function ContentLibraryPage() {
   const [busy, setBusy] = useState(false);
   const [applying, setApplying] = useState(false);
   const [loadingKind, setLoadingKind] = useState<LibraryKind | null>(null);
-  const [newProfileName, setNewProfileName] = useState("");
+  // Per-region inline add state — each region's "+" toggles its own input.
+  const [claudeAdding, setClaudeAdding] = useState(false);
+  const [codexAdding, setCodexAdding] = useState(false);
+  const [claudeName, setClaudeName] = useState("");
+  const [codexName, setCodexName] = useState("");
   const { toasts, push, dismiss } = useToasts();
 
   // Display order: live profile first (so the user sees their *current*
@@ -432,29 +565,13 @@ export default function ContentLibraryPage() {
     [rowsByKind, activeKind],
   );
 
-  // The "+" opens a small menu to pick the profile TYPE. A profile is either
-  // a Claude profile (Desktop launcher + Code CLI alias) or a Codex profile
-  // (Desktop launcher). Both desktop launchers work the same way: a separate
-  // --user-data-dir + a launcher .app, so each isolates its own login.
-  const [addMenuOpen, setAddMenuOpen] = useState(false);
-  const addMenuRef = useRef<HTMLDivElement | null>(null);
-
-  useEffect(() => {
-    if (!addMenuOpen) return;
-    const onDown = (e: MouseEvent) => {
-      if (addMenuRef.current && !addMenuRef.current.contains(e.target as Node)) {
-        setAddMenuOpen(false);
-      }
-    };
-    document.addEventListener("mousedown", onDown);
-    return () => document.removeEventListener("mousedown", onDown);
-  }, [addMenuOpen]);
-
+  // Each region's "+" creates that type directly — Claude profile (Desktop
+  // launcher + Code CLI alias) or Codex profile (Desktop launcher). Both are
+  // --user-data-dir launchers; each isolates its own login.
   const handleCreate = useCallback(
-    async (kind: "claude" | "codex") => {
-      const name = newProfileName.trim();
+    async (kind: "claude" | "codex", rawName: string) => {
+      const name = rawName.trim();
       if (!name) return;
-      setAddMenuOpen(false);
       setBusy(true);
       try {
         const parts: string[] = [];
@@ -468,7 +585,13 @@ export default function ContentLibraryPage() {
           parts.push(`Codex launcher (${codex.name})`);
         }
         push(`Created ${kind === "claude" ? "Claude" : "Codex"} profile: ${parts.join(" + ")}.`, "success");
-        setNewProfileName("");
+        if (kind === "claude") {
+          setClaudeName("");
+          setClaudeAdding(false);
+        } else {
+          setCodexName("");
+          setCodexAdding(false);
+        }
         await loadInstalls();
       } catch (e) {
         push(String(e), "error");
@@ -476,7 +599,33 @@ export default function ContentLibraryPage() {
         setBusy(false);
       }
     },
-    [newProfileName, loadInstalls, push],
+    [loadInstalls, push],
+  );
+
+  const handleDeleteClaude = useCallback(
+    async (install: DesktopInstall, deleteData: boolean) => {
+      await api.deleteDesktopProfile(install.id, deleteData);
+      setVisibleIds((current) => {
+        const next = new Set(current);
+        next.delete(install.id);
+        return next;
+      });
+      setSelection((current) =>
+        current?.type === "profile" && current.install.id === install.id ? null : current,
+      );
+      push(`Deleted ${install.name}${deleteData ? " — data erased" : ""}.`, "success");
+      await loadInstalls();
+    },
+    [loadInstalls, push],
+  );
+
+  const handleDeleteCodex = useCallback(
+    async (install: CodexInstall, deleteData: boolean) => {
+      await api.deleteCodexProfile(install.id, deleteData);
+      push(`Deleted Codex ${install.name}${deleteData ? " — data erased" : ""}.`, "success");
+      await loadInstalls();
+    },
+    [loadInstalls, push],
   );
 
   const activeRows = rowsByKind[activeKind] ?? [];
@@ -503,14 +652,33 @@ export default function ContentLibraryPage() {
           />
         </div>
 
-        <div className="mx-2 border-t border-border/60 pt-3">
-          <div className="mb-1.5 flex items-center justify-between px-3 font-sans text-[10px] uppercase tracking-[0.14em] text-muted-foreground/80">
-            <span>Profiles</span>
-            <span className="font-mono text-[10px] tabular-nums text-muted-foreground/60">
-              {visibleIds.size}/{installs.length}
-            </span>
-          </div>
-          <div className="space-y-0.5 px-1">
+        {/* CLAUDE world — its own "+" and the matrix-column checkboxes live
+         *  only here. KindNav above is Claude-scoped. */}
+        <div className="mx-2 border-t border-border/60 pt-2">
+          <SidebarRegion
+            label="Claude"
+            accent="claude"
+            caption="Sharing is among Claude profiles only."
+            count={`${visibleIds.size}/${installs.length}`}
+            adding={claudeAdding}
+            onAddToggle={() => {
+              setClaudeAdding((o) => !o);
+              setCodexAdding(false);
+            }}
+          >
+            {claudeAdding ? (
+              <AddProfileInput
+                value={claudeName}
+                onChange={setClaudeName}
+                onConfirm={() => handleCreate("claude", claudeName)}
+                onCancel={() => {
+                  setClaudeAdding(false);
+                  setClaudeName("");
+                }}
+                busy={busy}
+                hint="New Claude profile — sign in after first launch (quit other Claude windows first)."
+              />
+            ) : null}
             {sortedInstalls.map((p) => (
               <SidebarProfileRow
                 key={p.id}
@@ -520,142 +688,102 @@ export default function ContentLibraryPage() {
                 onToggleVisible={() => handleToggleVisible(p.id)}
                 onSelect={() => handleSelectProfile(p)}
                 onLaunch={() => handleLaunch(p)}
+                onDelete={(deleteData) => handleDeleteClaude(p, deleteData)}
                 busy={busy}
               />
             ))}
-          </div>
+          </SidebarRegion>
         </div>
 
-        {codexInstalls.length > 0 ? (
-          <div className="mx-2 border-t border-border/60 pt-3">
-            <div className="mb-1.5 flex items-center justify-between px-3 font-sans text-[10px] uppercase tracking-[0.14em] text-muted-foreground/80">
-              <span>Codex</span>
-              <span className="font-mono text-[10px] tabular-nums text-muted-foreground/60">
-                {codexInstalls.length}
-              </span>
-            </div>
-            <div className="space-y-0.5 px-1">
-              {codexInstalls.map((c) => (
-                <div
-                  key={c.id}
-                  className={cn(
-                    "group flex items-center gap-1.5 rounded-md pl-1.5 pr-1 transition-colors",
-                    c.is_running ? "bg-primary/4" : "hover:bg-muted/60",
-                  )}
-                >
-                  <span className="relative ml-1 inline-flex h-2 w-2 shrink-0 items-center justify-center">
-                    {c.is_running ? (
-                      <>
-                        <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-primary/60" />
-                        <span className="relative inline-flex h-2 w-2 rounded-full bg-primary" />
-                      </>
-                    ) : (
-                      <span
-                        className={cn(
-                          "inline-block h-1.5 w-1.5 rounded-full",
-                          c.kind === "default" ? "bg-muted-foreground/60" : "bg-muted-foreground/30",
-                        )}
-                      />
-                    )}
-                  </span>
-                  <span
-                    className={cn(
-                      "flex-1 truncate py-1.5 pl-1 font-sans text-[13px]",
-                      c.is_running && "font-medium",
-                    )}
-                    title={c.data_dir}
-                  >
-                    {c.kind === "default" ? "Default" : c.name}
-                  </span>
-                  {c.is_running ? (
-                    <span className="mr-1 rounded-full bg-primary/15 px-1.5 py-0.5 font-sans text-[9px] uppercase tracking-wider text-primary">
-                      live
-                    </span>
-                  ) : null}
-                  <button
-                    type="button"
-                    onClick={() => handleLaunchCodex(c)}
-                    disabled={busy || c.is_running}
-                    className="shrink-0 rounded-md p-1 text-muted-foreground opacity-0 transition-all hover:bg-primary/10 hover:text-primary group-hover:opacity-100 disabled:cursor-not-allowed disabled:opacity-40"
-                    title={c.is_running ? `Codex ${c.name} is already running` : `Launch Codex ${c.name}`}
-                    aria-label={`Launch Codex ${c.name}`}
-                  >
-                    <Play className="h-3 w-3" />
-                  </button>
-                </div>
-              ))}
-            </div>
-          </div>
-        ) : null}
-
-        <div className="mx-2 mt-auto space-y-2 border-t border-border/60 px-1 pt-3">
-          <div className="px-2 font-sans text-[10px] uppercase tracking-[0.14em] text-muted-foreground/80">
-            New profile
-          </div>
-          {/* Type the name, then "+" opens a menu to pick the profile TYPE.
-           *  Claude → Desktop launcher + Code alias; Codex → Desktop launcher.
-           *  Both desktop launchers use a separate --user-data-dir. */}
-          <div className="relative flex gap-1" ref={addMenuRef}>
-            <Input
-              value={newProfileName}
-              onChange={(e) => setNewProfileName(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && newProfileName.trim()) setAddMenuOpen(true);
-              }}
-              placeholder="name"
-              className="h-7 font-sans text-xs"
-              disabled={busy}
-            />
-            <Button
-              type="button"
-              size="icon"
-              onClick={() => setAddMenuOpen((o) => !o)}
-              disabled={busy || !newProfileName.trim()}
-              className="h-7 w-7"
-              aria-label="Add profile"
-              aria-haspopup="menu"
-              aria-expanded={addMenuOpen}
-            >
-              <Plus className="h-3.5 w-3.5" />
-            </Button>
-
-            {addMenuOpen ? (
-              <div
-                role="menu"
-                className="absolute bottom-9 right-0 z-50 w-52 overflow-hidden rounded-md border bg-background shadow-lg"
-              >
-                <button
-                  type="button"
-                  role="menuitem"
-                  onClick={() => handleCreate("claude")}
-                  className="flex w-full items-center gap-2.5 px-3 py-2 text-left hover:bg-muted/70"
-                >
-                  <span className="h-2.5 w-2.5 shrink-0 rounded-[3px] bg-primary" />
-                  <span className="flex min-w-0 flex-col leading-tight">
-                    <span className="font-sans text-[12px] text-foreground">Claude profile</span>
-                    <span className="font-sans text-[10px] text-muted-foreground">Desktop launcher + Code alias</span>
-                  </span>
-                </button>
-                <div className="h-px bg-border" />
-                <button
-                  type="button"
-                  role="menuitem"
-                  onClick={() => handleCreate("codex")}
-                  className="flex w-full items-center gap-2.5 px-3 py-2 text-left hover:bg-muted/70"
-                >
-                  <span className="h-2.5 w-2.5 shrink-0 rounded-[3px] bg-foreground" />
-                  <span className="flex min-w-0 flex-col leading-tight">
-                    <span className="font-sans text-[12px] text-foreground">Codex profile</span>
-                    <span className="font-sans text-[10px] text-muted-foreground">Desktop launcher</span>
-                  </span>
-                </button>
-              </div>
+        {/* Heavier wall: the two worlds are separate rooms, not one list. */}
+        <div className="mx-2 border-t-2 border-border pt-2">
+          <SidebarRegion
+            label="Codex"
+            accent="codex"
+            caption="Launch & login only — Codex content sharing isn't available yet."
+            count={`${codexInstalls.length}`}
+            adding={codexAdding}
+            onAddToggle={() => {
+              setCodexAdding((o) => !o);
+              setClaudeAdding(false);
+            }}
+          >
+            {codexAdding ? (
+              <AddProfileInput
+                value={codexName}
+                onChange={setCodexName}
+                onConfirm={() => handleCreate("codex", codexName)}
+                onCancel={() => {
+                  setCodexAdding(false);
+                  setCodexName("");
+                }}
+                busy={busy}
+                hint="New Codex profile — sign in after first launch (quit other Codex windows first)."
+              />
             ) : null}
-          </div>
-          <p className="px-2 font-sans text-[10px] leading-snug text-muted-foreground/70">
-            Each profile is a fresh login. Sign in after first launch — quit any
-            other window of that app first so the auth link lands here.
-          </p>
+            {codexInstalls.length === 0 && !codexAdding ? (
+              <p className="px-3 py-2 font-sans text-[12px] text-muted-foreground/70">
+                No Codex profiles yet — + to add one.
+              </p>
+            ) : null}
+            {codexInstalls.map((c) => (
+              <div
+                key={c.id}
+                className={cn(
+                  "group flex items-center gap-1.5 rounded-md pl-1.5 pr-1 transition-colors",
+                  c.is_running ? "bg-primary/4" : "hover:bg-muted/60",
+                )}
+              >
+                <span className="relative ml-1 inline-flex h-2 w-2 shrink-0 items-center justify-center">
+                  {c.is_running ? (
+                    <>
+                      <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-primary/60" />
+                      <span className="relative inline-flex h-2 w-2 rounded-full bg-primary" />
+                    </>
+                  ) : (
+                    <span
+                      className={cn(
+                        "inline-block h-1.5 w-1.5 rounded-full",
+                        c.kind === "default" ? "bg-muted-foreground/60" : "bg-muted-foreground/30",
+                      )}
+                    />
+                  )}
+                </span>
+                <span
+                  className={cn(
+                    "flex-1 truncate py-1.5 pl-1 font-sans text-[13px]",
+                    c.is_running && "font-medium",
+                  )}
+                  title={c.data_dir}
+                >
+                  {c.kind === "default" ? "Default" : c.name}
+                </span>
+                {c.is_running ? (
+                  <span className="mr-1 rounded-full bg-primary/15 px-1.5 py-0.5 font-sans text-[9px] uppercase tracking-wider text-primary">
+                    live
+                  </span>
+                ) : null}
+                <button
+                  type="button"
+                  onClick={() => handleLaunchCodex(c)}
+                  disabled={busy || c.is_running}
+                  className="shrink-0 rounded-md p-1 text-muted-foreground opacity-0 transition-all hover:bg-primary/10 hover:text-primary group-hover:opacity-100 disabled:cursor-not-allowed disabled:opacity-40"
+                  title={c.is_running ? `Codex ${c.name} is already running` : `Launch Codex ${c.name}`}
+                  aria-label={`Launch Codex ${c.name}`}
+                >
+                  <Play className="h-3 w-3" />
+                </button>
+                <DeleteProfileButton
+                  name={c.name}
+                  kind={c.kind}
+                  isRunning={c.is_running}
+                  world="codex"
+                  busy={busy}
+                  onDelete={(deleteData) => handleDeleteCodex(c, deleteData)}
+                />
+              </div>
+            ))}
+          </SidebarRegion>
         </div>
       </aside>
 

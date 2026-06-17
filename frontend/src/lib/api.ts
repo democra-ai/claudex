@@ -85,6 +85,14 @@ export const api = {
     return invoke("launch_codex_install", { installId });
   },
 
+  deleteDesktopProfile(installId: string, deleteData: boolean): Promise<void> {
+    return invoke("delete_desktop_profile", { installId, deleteData });
+  },
+
+  deleteCodexProfile(installId: string, deleteData: boolean): Promise<void> {
+    return invoke("delete_codex_profile", { installId, deleteData });
+  },
+
   listCodeHistory(configDir: string): Promise<CodeProject[]> {
     return invoke("list_code_history", { configDir });
   },

@@ -2131,6 +2131,163 @@ pub fn launch_codex_install(install_id: String) -> Result<(), String> {
     run_command(open, "Launch Codex profile")
 }
 
+// ===========================================================================
+// Deleting profiles
+// ===========================================================================
+
+/// Recompute a profile's `type` from which halves remain after a deletion.
+fn profile_type_for(p: &RegistryProfile) -> String {
+    let claude = p.desktop.is_some() || p.code.is_some();
+    let codex = p.codex.is_some();
+    match (claude, codex) {
+        (true, true) => "both".to_string(),
+        (false, true) => "codex".to_string(),
+        (true, false) => {
+            if p.desktop.is_some() && p.code.is_some() {
+                "both".to_string()
+            } else if p.desktop.is_some() {
+                "desktop".to_string()
+            } else {
+                "code".to_string()
+            }
+        }
+        (false, false) => "empty".to_string(),
+    }
+}
+
+/// Remove exactly the `alias <alias_name>=...` line from ~/.zshrc (the inverse
+/// of write_zsh_alias_block), then drop any now-empty managed marker block.
+/// The writer only keeps the most-recently-created alias inside the markers,
+/// so we scan for the specific alias line ANYWHERE rather than assuming it
+/// lives in the block.
+fn remove_zsh_alias_line(alias_name: &str) -> Result<(), String> {
+    let home = home_dir()?;
+    let rc = home.join(".zshrc");
+    let existing = match fs::read_to_string(&rc) {
+        Ok(s) => s,
+        Err(e) if e.kind() == ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(format!("Read {}: {e}", rc.display())),
+    };
+    let needle = format!("alias {alias_name}=");
+    let kept: Vec<&str> = existing
+        .lines()
+        .filter(|line| !line.trim_start().starts_with(&needle))
+        .collect();
+
+    // Drop a now-empty managed block (BEGIN immediately followed by END).
+    let mut out: Vec<&str> = Vec::with_capacity(kept.len());
+    let mut i = 0;
+    while i < kept.len() {
+        if kept[i].contains(ALIAS_MARK_BEGIN)
+            && i + 1 < kept.len()
+            && kept[i + 1].contains(ALIAS_MARK_END)
+        {
+            i += 2; // skip the empty BEGIN/END pair
+            continue;
+        }
+        out.push(kept[i]);
+        i += 1;
+    }
+
+    let mut new_contents = out.join("\n");
+    if existing.ends_with('\n') && !new_contents.ends_with('\n') {
+        new_contents.push('\n');
+    }
+    fs::write(&rc, new_contents).map_err(|e| format!("Write {}: {e}", rc.display()))?;
+    Ok(())
+}
+
+/// Delete a Claude profile (Desktop launcher + Code alias). Soft by default:
+/// removes the launcher .app, the Code CLI alias, and the registry half(s),
+/// but keeps the data dir unless `delete_data` is set.
+pub fn delete_desktop_profile(install_id: String, delete_data: bool) -> Result<(), String> {
+    let install = list_desktop_installs()?
+        .into_iter()
+        .find(|i| i.id == install_id)
+        .ok_or_else(|| format!("Profile not found: {install_id}"))?;
+    if install.kind == "default" {
+        return Err("The default Claude install can't be deleted".to_string());
+    }
+    if install.is_running {
+        return Err(format!("Quit {} before deleting it", install.name));
+    }
+
+    let mut registry = load_registry()?;
+    let Some(idx) = registry.profiles.iter().position(|p| p.name == install.name) else {
+        return Err(format!("Profile \"{}\" not in registry", install.name));
+    };
+
+    // Remove the launcher .app — install.launcher_path, NEVER app_path
+    // (app_path is the real /Applications/Claude.app).
+    if let Some(launcher) = &install.launcher_path {
+        remove_path(Path::new(launcher))?;
+    }
+
+    // Strip the Code CLI alias + optionally delete the Code config dir.
+    if let Some(code) = registry.profiles[idx].code.clone() {
+        if let Some(alias) = code.get("aliasName").and_then(|v| v.as_str()) {
+            let _ = remove_zsh_alias_line(alias);
+        }
+        if delete_data {
+            if let Some(cfg) = code.get("configDir").and_then(|v| v.as_str()) {
+                remove_path(Path::new(cfg))?;
+            }
+        }
+    }
+
+    if delete_data {
+        remove_path(Path::new(&install.data_dir))?;
+    }
+
+    // Clear only the Claude halves; keep a Codex half if this entry has one.
+    registry.profiles[idx].desktop = None;
+    registry.profiles[idx].code = None;
+    let new_type = profile_type_for(&registry.profiles[idx]);
+    if new_type == "empty" {
+        registry.profiles.remove(idx);
+    } else {
+        registry.profiles[idx].profile_type = new_type;
+    }
+    save_registry(&registry)?;
+    Ok(())
+}
+
+/// Delete a Codex profile (Desktop launcher). Soft by default.
+pub fn delete_codex_profile(install_id: String, delete_data: bool) -> Result<(), String> {
+    let install = list_codex_installs()?
+        .into_iter()
+        .find(|i| i.id == install_id)
+        .ok_or_else(|| format!("Codex profile not found: {install_id}"))?;
+    if install.kind == "default" {
+        return Err("The default Codex install can't be deleted".to_string());
+    }
+    if install.is_running {
+        return Err(format!("Quit Codex {} before deleting it", install.name));
+    }
+
+    let mut registry = load_registry()?;
+    let Some(idx) = registry.profiles.iter().position(|p| p.name == install.name) else {
+        return Err(format!("Codex profile \"{}\" not in registry", install.name));
+    };
+
+    if let Some(launcher) = &install.launcher_path {
+        remove_path(Path::new(launcher))?;
+    }
+    if delete_data {
+        remove_path(Path::new(&install.data_dir))?;
+    }
+
+    registry.profiles[idx].codex = None;
+    let new_type = profile_type_for(&registry.profiles[idx]);
+    if new_type == "empty" {
+        registry.profiles.remove(idx);
+    } else {
+        registry.profiles[idx].profile_type = new_type;
+    }
+    save_registry(&registry)?;
+    Ok(())
+}
+
 /// Best-effort: replace every `-` with `/`. Original `-` in dir names is lost,
 /// so we mark the result as a hint by returning the encoded form too.
 fn decode_project_dir_name(name: &str) -> String {
@@ -4823,6 +4980,16 @@ mod commands {
     }
 
     #[tauri::command]
+    pub fn delete_desktop_profile(install_id: String, delete_data: bool) -> Result<(), String> {
+        super::delete_desktop_profile(install_id, delete_data)
+    }
+
+    #[tauri::command]
+    pub fn delete_codex_profile(install_id: String, delete_data: bool) -> Result<(), String> {
+        super::delete_codex_profile(install_id, delete_data)
+    }
+
+    #[tauri::command]
     pub fn list_code_history(config_dir: String) -> Result<Vec<CodeProject>, String> {
         super::list_code_history(Path::new(&config_dir))
     }
@@ -5007,6 +5174,8 @@ pub fn run() {
             commands::list_codex_installs,
             commands::create_codex_profile,
             commands::launch_codex_install,
+            commands::delete_desktop_profile,
+            commands::delete_codex_profile,
             commands::list_code_history,
             commands::list_pair_code_history_sharing,
             commands::apply_pair_code_history_sharing,
