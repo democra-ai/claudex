@@ -3829,10 +3829,218 @@ pub fn list_preferences_library() -> Result<Vec<LibraryRow>, String> {
 /// Dispatch a single cell flip to the right pair-wise apply helper.
 /// Auto-picks a source: explicit `source_install_id` if provided, else the
 /// first present cell in the same row that isn't the target.
+// ===========================================================================
+// Cross-tool Skills library (the SKILL.md dirs) — the one content surface that
+// is format-compatible across Claude and Codex. Columns are the Claude Code
+// config dirs (~/.claude, ~/.claude-<name>) plus ONE global Codex column
+// (~/.codex/skills) — Codex skills are global (launchers set --user-data-dir,
+// not CODEX_HOME), so there's a single Codex library, not one per profile.
+// Sharing is a symlink, same as Claude<->Claude skill sharing.
+// ===========================================================================
+
+const CODEX_SKILLS_GLOBAL_ID: &str = "codex:global";
+
+fn codex_skills_dir() -> Result<PathBuf, String> {
+    // Codex agent config lives in $CODEX_HOME or ~/.codex (NOT the desktop
+    // Chromium data dir). Skills are a CLI/agent concept stored there.
+    let base = match std::env::var("CODEX_HOME") {
+        Ok(h) if !h.is_empty() => PathBuf::from(h),
+        _ => home_dir()?.join(".codex"),
+    };
+    Ok(base.join(SKILLS_SUBDIR))
+}
+
+/// On-disk skills dir backing a Skills-kind column id.
+fn skills_dir_for_column(id: &str) -> Result<Option<PathBuf>, String> {
+    if id == CODEX_SKILLS_GLOBAL_ID {
+        return Ok(Some(codex_skills_dir()?));
+    }
+    for inst in list_code_installs()? {
+        if inst.id == id {
+            return Ok(Some(PathBuf::from(inst.config_dir).join(SKILLS_SUBDIR)));
+        }
+    }
+    Ok(None)
+}
+
+pub fn list_skills_library() -> Result<Vec<LibraryRow>, String> {
+    let code_installs = list_code_installs()?;
+    let codex_dir = codex_skills_dir()?;
+
+    // (id, name, skills_dir) per Claude column.
+    let claude_cols: Vec<(String, String, PathBuf)> = code_installs
+        .iter()
+        .map(|i| {
+            (
+                i.id.clone(),
+                i.name.clone(),
+                PathBuf::from(&i.config_dir).join(SKILLS_SUBDIR),
+            )
+        })
+        .collect();
+
+    let mut names: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    let mut collect = |dir: &Path| {
+        if let Ok(rd) = fs::read_dir(dir) {
+            for e in rd.flatten() {
+                let n = e.file_name().to_string_lossy().to_string();
+                if n.starts_with('.') {
+                    continue;
+                }
+                // Skill = a directory (or a symlink to one).
+                if e.path().is_dir() {
+                    names.insert(n);
+                }
+            }
+        }
+    };
+    for (_, _, d) in &claude_cols {
+        collect(d);
+    }
+    collect(&codex_dir);
+
+    let mut rows = Vec::new();
+    for name in names {
+        let claude_cells: Vec<LibraryCell> = claude_cols
+            .iter()
+            .map(|(id, label, dir)| {
+                let p = dir.join(&name);
+                let present = p.is_dir()
+                    || fs::symlink_metadata(&p)
+                        .map(|m| m.file_type().is_symlink())
+                        .unwrap_or(false);
+                LibraryCell {
+                    install_id: id.clone(),
+                    install_name: label.clone(),
+                    data_dir: dir.to_string_lossy().to_string(),
+                    kind: if id == "default" { "default".into() } else { "profile".into() },
+                    state: String::new(),
+                    present,
+                    detail: None,
+                    digest: None,
+                    link_target_digest: symlink_target_digest(&p),
+                }
+            })
+            .collect();
+
+        let mut row = LibraryRow {
+            id: name.clone(),
+            label: name.clone(),
+            description: None,
+            cells: claude_cells,
+            interactive: true,
+            group: Some("Claude + Codex skills".into()),
+        };
+        compute_row_states(&mut row, true);
+
+        // One global Codex cell — link-only state computed locally.
+        let codex_path = codex_dir.join(&name);
+        let (present, state, detail) = match fs::symlink_metadata(&codex_path) {
+            Ok(meta) if meta.file_type().is_symlink() => {
+                let ours = claude_cols
+                    .iter()
+                    .any(|(_, _, d)| path_points_to(&codex_path, &d.join(&name)));
+                if ours {
+                    (true, "shared", None)
+                } else {
+                    (true, "independent", Some("links elsewhere".to_string()))
+                }
+            }
+            Ok(_) => (true, "independent", Some("real folder in ~/.codex/skills".to_string())),
+            Err(_) => (false, "absent", None),
+        };
+        row.cells.push(LibraryCell {
+            install_id: CODEX_SKILLS_GLOBAL_ID.to_string(),
+            install_name: "Codex".to_string(),
+            data_dir: codex_dir.to_string_lossy().to_string(),
+            kind: "codex".to_string(),
+            state: state.to_string(),
+            present,
+            detail,
+            digest: None,
+            link_target_digest: None,
+        });
+        rows.push(row);
+    }
+    Ok(rows)
+}
+
+/// Toggle a skill symlink for the Skills kind. Non-destructive: never
+/// overwrites or deletes a real folder / foreign symlink — it refuses with a
+/// clear error instead.
+fn apply_skill_share(change: &LibraryCellChange) -> Result<bool, String> {
+    let name = &change.row_id;
+    let target_dir = skills_dir_for_column(&change.target_install_id)?
+        .ok_or_else(|| format!("Unknown skills column: {}", change.target_install_id))?;
+    let target_link = target_dir.join(name);
+
+    if change.wants {
+        let source_dir = if let Some(src) = &change.source_install_id {
+            skills_dir_for_column(src)?.ok_or_else(|| format!("Unknown source: {src}"))?
+        } else {
+            // Prefer the default ~/.claude, then any present Claude column.
+            let rows = list_skills_library()?;
+            let row = rows
+                .into_iter()
+                .find(|r| r.id == *name)
+                .ok_or_else(|| format!("Skill {name} not found"))?;
+            let src_id = row
+                .cells
+                .iter()
+                .find(|c| c.install_id != change.target_install_id && c.present && c.kind == "default")
+                .or_else(|| {
+                    row.cells.iter().find(|c| {
+                        c.install_id != change.target_install_id
+                            && c.present
+                            && c.install_id != CODEX_SKILLS_GLOBAL_ID
+                    })
+                })
+                .or_else(|| {
+                    row.cells
+                        .iter()
+                        .find(|c| c.install_id != change.target_install_id && c.present)
+                })
+                .ok_or_else(|| "No profile holds this skill to share from.".to_string())?
+                .install_id
+                .clone();
+            skills_dir_for_column(&src_id)?.ok_or_else(|| "Source resolution failed".to_string())?
+        };
+        let source_path = source_dir.join(name);
+        if !source_path.is_dir() && fs::symlink_metadata(&source_path).is_err() {
+            return Err(format!("Source skill \"{name}\" doesn't exist."));
+        }
+        if path_points_to(&target_link, &source_path) {
+            return Ok(false); // already linked
+        }
+        if fs::symlink_metadata(&target_link).is_ok() {
+            return Err(format!(
+                "\"{name}\" already exists in the target and isn't a Claudex link — remove it there first."
+            ));
+        }
+        fs::create_dir_all(&target_dir).map_err(|e| format!("Create {}: {e}", target_dir.display()))?;
+        symlink_path(&source_path, &target_link)?;
+        Ok(true)
+    } else {
+        match fs::symlink_metadata(&target_link) {
+            Ok(meta) if meta.file_type().is_symlink() => {
+                remove_path(&target_link)?;
+                Ok(true)
+            }
+            Ok(_) => Err(format!(
+                "\"{name}\" in the target is a real folder, not a Claudex link — leaving it untouched."
+            )),
+            Err(_) => Ok(false),
+        }
+    }
+}
+
 pub fn apply_library_change(
     kind: String,
     change: LibraryCellChange,
 ) -> Result<bool, String> {
+    if kind == "skills" {
+        return apply_skill_share(&change);
+    }
     let installs = list_desktop_installs()?;
     let target = installs
         .iter()
@@ -5096,6 +5304,11 @@ mod commands {
     }
 
     #[tauri::command]
+    pub fn list_skills_library() -> Result<Vec<LibraryRow>, String> {
+        super::list_skills_library()
+    }
+
+    #[tauri::command]
     pub fn list_library_preferences() -> Result<Vec<LibraryRow>, String> {
         super::list_preferences_library()
     }
@@ -5190,6 +5403,7 @@ pub fn run() {
             commands::list_library_extensions,
             commands::list_library_mcp,
             commands::list_library_cowork_skills,
+            commands::list_skills_library,
             commands::list_library_preferences,
             commands::apply_library_changes,
             commands::list_library_code_history,

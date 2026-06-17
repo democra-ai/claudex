@@ -276,6 +276,7 @@ export type LibraryKind =
   | "extensions"
   | "mcp_servers"
   | "cowork_skills"
+  | "skills"
   | "preferences";
 
 // -----------------------------

@@ -1,4 +1,4 @@
-import { Blocks, Boxes, Hammer, MessagesSquare, Sparkles, Settings2 } from "lucide-react";
+import { Blocks, Boxes, Hammer, MessagesSquare, Sparkles, Settings2, Wrench } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { LibraryKind, LibraryRow } from "@/types";
 
@@ -8,6 +8,8 @@ type KindDef = {
   icon: typeof Blocks;
   /** Short hint shown beneath the label. */
   blurb: string;
+  /** True for the one kind that shares across the Claude<->Codex boundary. */
+  crossTool?: boolean;
 };
 
 const KINDS: KindDef[] = [
@@ -37,9 +39,16 @@ const KINDS: KindDef[] = [
   },
   {
     value: "cowork_skills",
-    label: "Skills",
+    label: "Cowork skills",
     icon: Hammer,
     blurb: "local-agent skills",
+  },
+  {
+    value: "skills",
+    label: "Skills",
+    icon: Wrench,
+    blurb: "~/.claude/skills + Codex",
+    crossTool: true,
   },
   {
     value: "preferences",
@@ -101,7 +110,15 @@ export function KindNav({ value, onChange, counts }: KindNavProps) {
                 )}
               />
               <span className="flex flex-col leading-tight">
-                <span className="font-sans text-[13px]">{kind.label}</span>
+                <span className="flex items-center gap-1.5 font-sans text-[13px]">
+                  {kind.label}
+                  {kind.crossTool ? (
+                    <span
+                      className="h-2 w-2 shrink-0 rounded-[2px] bg-foreground"
+                      title="Shares across Claude and Codex"
+                    />
+                  ) : null}
+                </span>
                 <span className="font-sans text-[10px] text-muted-foreground/70">
                   {kind.blurb}
                 </span>

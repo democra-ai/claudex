@@ -104,18 +104,29 @@ export function Matrix({
         </div>
         {profiles.map((p, i) => {
           const summary = columnSummary[i];
+          const isCodex = p.id === "codex:global";
           return (
             <div
               key={p.id}
               className={cn(
                 "flex flex-col items-center justify-center px-1 py-2 leading-none",
                 p.kind === "default" && "bg-muted/40",
+                // The global Codex skills column: tint + a left wall so it
+                // never reads as just another Claude profile.
+                isCodex && "border-l-2 border-border bg-foreground/5",
               )}
-              title={`${p.name}\n${summary.present} present · ${summary.shared} shared · ${summary.copied} copied`}
+              title={
+                isCodex
+                  ? "Codex — ~/.codex/skills (global, shared by all Codex profiles)"
+                  : `${p.name}\n${summary.present} present · ${summary.shared} shared · ${summary.copied} copied`
+              }
             >
               <span className="truncate font-sans text-[12px] font-medium text-foreground/90">
                 {p.kind === "default" ? "Default" : p.name}
               </span>
+              {isCodex ? (
+                <span className="font-mono text-[8px] text-muted-foreground/60">global</span>
+              ) : null}
               <span className="mt-0.5 font-mono text-[9px] tabular-nums text-muted-foreground/70">
                 {summary.shared > 0 ? (
                   <span className="text-state-shared">

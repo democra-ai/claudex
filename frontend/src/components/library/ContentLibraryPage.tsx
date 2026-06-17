@@ -7,6 +7,7 @@ import { cn } from "@/lib/utils";
 import { api, isTauri } from "@/lib/api";
 import { useToasts } from "@/hooks/useToast";
 import type {
+  CodeInstall,
   CodexInstall,
   DesktopInstall,
   LibraryCellChange,
@@ -142,8 +143,32 @@ const EMPTY_HINTS: Record<LibraryKind, string> = {
   cowork_sessions: "No Cowork agent-mode sessions in any profile.",
   extensions: "No extensions installed in any profile.",
   mcp_servers: "No MCPs configured in any claude_desktop_config.json.",
-  cowork_skills: "No Skills — open Cowork in any profile once.",
+  cowork_skills: "No Cowork skills — open Cowork in any profile once.",
+  skills: "No skills found in ~/.claude/skills or ~/.codex/skills.",
   preferences: "Allowlisted preferences not set in any profile.",
+};
+
+/** Per-kind one-liner shown above the matrix explaining the Codex situation. */
+const KIND_SCOPE_CAPTION: Partial<Record<LibraryKind, string>> = {
+  skills: "Skills are the one library Claude and Codex share — the Codex column links into ~/.codex/skills.",
+  extensions: "Claude-only — Codex has no extensions equivalent.",
+  mcp_servers: "Claude uses JSON, Codex uses TOML — cross-tool MCP would be copy-with-transform, not yet available.",
+  cowork_skills: "Claude Cowork only — these are the per-profile Cowork agent skills.",
+  code_history: "Claude-only content.",
+  cowork_sessions: "Claude-only content.",
+  preferences: "Claude-only content.",
+};
+
+/** Synthetic DesktopInstall-shaped column for the global Codex skills library. */
+const CODEX_SKILLS_COLUMN: DesktopInstall = {
+  id: "codex:global",
+  name: "Codex",
+  kind: "profile",
+  data_dir: "~/.codex/skills",
+  app_path: null,
+  launcher_path: null,
+  managed: true,
+  is_running: false,
 };
 
 interface SidebarProfileRowProps {
@@ -254,6 +279,7 @@ function SidebarProfileRow({
 export default function ContentLibraryPage() {
   const [installs, setInstalls] = useState<DesktopInstall[]>([]);
   const [codexInstalls, setCodexInstalls] = useState<CodexInstall[]>([]);
+  const [codeInstalls, setCodeInstalls] = useState<CodeInstall[]>([]);
   const [visibleIds, setVisibleIds] = useState<Set<string>>(new Set());
   const [activeKind, setActiveKind] = useState<LibraryKind>("code_history");
   const [rowsByKind, setRowsByKind] = useState<
@@ -296,6 +322,25 @@ export default function ContentLibraryPage() {
     [sortedInstalls, visibleIds],
   );
 
+  // The Skills kind is cross-tool: its columns are the Claude CODE config dirs
+  // (~/.claude, ~/.claude-<name>) plus ONE global Codex column — not the
+  // Desktop-profile columns the other kinds use. We feed the Matrix synthetic
+  // DesktopInstall-shaped columns whose ids match the backend cell ids.
+  const matrixColumns = useMemo<DesktopInstall[]>(() => {
+    if (activeKind !== "skills") return visibleProfiles;
+    const claudeCols: DesktopInstall[] = codeInstalls.map((c) => ({
+      id: c.id,
+      name: c.name,
+      kind: c.kind,
+      data_dir: c.config_dir,
+      app_path: null,
+      launcher_path: null,
+      managed: c.managed,
+      is_running: false,
+    }));
+    return [...claudeCols, CODEX_SKILLS_COLUMN];
+  }, [activeKind, visibleProfiles, codeInstalls]);
+
   const counts = useMemo(() => {
     const out: Partial<
       Record<LibraryKind, { synced: number; total: number } | null>
@@ -306,6 +351,7 @@ export default function ContentLibraryPage() {
       "extensions",
       "mcp_servers",
       "cowork_skills",
+      "skills",
       "preferences",
     ] as LibraryKind[]) {
       const rows = rowsByKind[kind];
@@ -327,9 +373,10 @@ export default function ContentLibraryPage() {
     }
     setBusy(true);
     try {
-      // Codex installs are an independent dimension — load them alongside but
-      // don't fail the whole refresh if Codex isn't present on this machine.
+      // Codex + Code installs are independent dimensions — load them alongside
+      // but don't fail the whole refresh if either isn't present.
       api.listCodexInstalls().then(setCodexInstalls).catch(() => setCodexInstalls([]));
+      api.listCodeInstalls().then(setCodeInstalls).catch(() => setCodeInstalls([]));
       const list = await api.listDesktopInstalls();
       setInstalls(list);
       setVisibleIds((current) => {
@@ -406,6 +453,7 @@ export default function ContentLibraryPage() {
       "extensions",
       "mcp_servers",
       "cowork_skills",
+      "skills",
       "preferences",
     ];
     const todo = others.filter((k) => k !== activeKind && !rowsByKind[k]);
@@ -485,6 +533,7 @@ export default function ContentLibraryPage() {
           "extensions",
           "mcp_servers",
           "cowork_skills",
+          "skills",
           "preferences",
         ] as LibraryKind[]
       ).filter((k) => k !== activeKind);
@@ -700,7 +749,7 @@ export default function ContentLibraryPage() {
           <SidebarRegion
             label="Codex"
             accent="codex"
-            caption="Launch & login only — Codex content sharing isn't available yet."
+            caption="Skills can be shared with Codex (Content → Skills); other content is Claude-only."
             count={`${codexInstalls.length}`}
             adding={codexAdding}
             onAddToggle={() => {
@@ -810,16 +859,27 @@ export default function ContentLibraryPage() {
           </div>
         ) : null}
 
-        {visibleProfiles.length === 0 ? (
+        {KIND_SCOPE_CAPTION[activeKind] ? (
+          <div className="flex items-center gap-2 rounded-md border border-border/60 bg-muted/30 px-3 py-1.5 font-sans text-[11px] text-muted-foreground">
+            {activeKind === "skills" ? (
+              <span className="h-2 w-2 shrink-0 rounded-[2px] bg-foreground" />
+            ) : null}
+            {KIND_SCOPE_CAPTION[activeKind]}
+          </div>
+        ) : null}
+
+        {matrixColumns.length === 0 ? (
           <div className="flex flex-1 items-center justify-center text-muted-foreground">
             <p className="font-sans text-sm">
-              No profiles selected — toggle one on the left.
+              {activeKind === "skills"
+                ? "No Claude Code or Codex install found."
+                : "No profiles selected — toggle one on the left."}
             </p>
           </div>
         ) : (
           <Matrix
             rows={activeRows}
-            profiles={visibleProfiles}
+            profiles={matrixColumns}
             pending={pending}
             onCellToggle={handleCellToggle}
             onRowSelect={handleSelectRow}

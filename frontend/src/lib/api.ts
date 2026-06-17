@@ -228,6 +228,8 @@ export const api = {
         ? "list_library_mcp"
         : kind === "cowork_skills"
         ? "list_library_cowork_skills"
+        : kind === "skills"
+        ? "list_skills_library"
         : "list_library_preferences";
     return invoke(command);
   },
