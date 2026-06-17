@@ -6103,14 +6103,21 @@ fn memory_matrix_rows(cols: &[MemoryCol]) -> Vec<LibraryRow> {
             kind: c.kind.clone(),
             state: states[i].to_string(),
             present: present[i],
-            detail: if present[i] {
-                Some(if c.kind == "codex" {
-                    MEMORY_CODEX_FILE.to_string()
+            // Always name the file so an absent cell still reads
+            // "CLAUDE.md · not created" (self-describing + clickable to
+            // create) instead of a blank "—". This is what makes Memory
+            // visible on a fresh account.
+            detail: {
+                let filename = if c.kind == "codex" {
+                    MEMORY_CODEX_FILE
                 } else {
-                    MEMORY_CLAUDE_FILE.to_string()
+                    MEMORY_CLAUDE_FILE
+                };
+                Some(if present[i] {
+                    filename.to_string()
+                } else {
+                    format!("{filename} · not created")
                 })
-            } else {
-                None
             },
             digest: None,
             link_target_digest: symlink_target_digest(&paths[i]),

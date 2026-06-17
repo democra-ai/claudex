@@ -155,7 +155,14 @@ export function computeKindCount(rows: LibraryRow[]): {
 }
 
 export function KindNav({ value, onChange, counts, only, heading = "Content" }: KindNavProps) {
-  const kinds = only ? KINDS.filter((k) => only.includes(k.value)) : KINDS;
+  // When `only` is given, follow ITS order (the caller controls the sequence),
+  // not the position in KINDS — so each tab can present its kinds in the
+  // canonical order: Sessions · Memory · Skill · MCP · Preference.
+  const kinds = only
+    ? only
+        .map((v) => KINDS.find((k) => k.value === v))
+        .filter((k): k is KindDef => Boolean(k))
+    : KINDS;
   return (
     <nav className="flex flex-col gap-0.5">
       <div className="px-3 pb-2 font-sans text-[10px] uppercase tracking-[0.14em] text-muted-foreground/70">

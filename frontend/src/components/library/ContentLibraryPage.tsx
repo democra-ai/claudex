@@ -222,9 +222,9 @@ const CLAUDE_CODE_MCP_COLUMN: DesktopInstall = {
 /** The three Codex-private content kinds (global to ~/.codex). */
 const CODEX_KINDS: LibraryKind[] = [
   "codex_sessions",
-  "codex_mcp",
-  "codex_skills",
   "codex_memory",
+  "codex_skills",
+  "codex_mcp",
   "codex_preferences",
 ];
 
@@ -376,11 +376,12 @@ function SegmentedTabs({
   );
 }
 
+// Canonical content order, shared across tabs: Sessions · Memory · Skill · MCP · Preference.
 const CLAUDE_KINDS: LibraryKind[] = [
   "claude_sessions",
-  "mcp_servers",
-  "claude_skills",
   "memory",
+  "claude_skills",
+  "mcp_servers",
   "preferences",
 ];
 
@@ -700,6 +701,18 @@ export default function ContentLibraryPage() {
       const row = rows?.find((r) => r.id === rowId);
       const cell = row?.cells.find((c) => c.install_id === installId);
       if (!cell) return;
+      // Memory: an absent cell has no file to symlink-share (sharing would
+      // error with "no account holds a memory file to share from"). Clicking
+      // it should open the editor to view/create the CLAUDE.md / AGENTS.md
+      // instead of silently staging a doomed share.
+      const isMemory =
+        activeKind === "memory" ||
+        activeKind === "codex_memory" ||
+        activeKind === "memory_cross";
+      if (isMemory && row && !cell.present) {
+        setSelection({ type: "row", row, kind: activeKind });
+        return;
+      }
       const key = pendingKeyFor(rowId, installId);
       setPending((current) => {
         const next = new Map(current);
@@ -1151,7 +1164,7 @@ export default function ContentLibraryPage() {
                   setSelection((current) => (current?.type === "row" ? null : current));
                 }}
                 counts={counts}
-                only={["skills", "mcp_cross", "memory_cross"]}
+                only={["memory_cross", "skills", "mcp_cross"]}
                 heading="Cross-tool sharing"
               />
               <p className="mt-1 flex items-start gap-1.5 px-3 font-sans text-[10px] leading-snug text-muted-foreground/70">
