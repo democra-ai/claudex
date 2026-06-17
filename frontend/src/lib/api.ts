@@ -218,35 +218,28 @@ export const api = {
   // -------- Library / matrix view --------
   // One call returns the full (item × profile) grid for the kind.
   listLibrary(kind: LibraryKind): Promise<LibraryRow[]> {
-    const command =
-      kind === "code_history"
-        ? "list_library_code_history"
-        : kind === "cowork_sessions"
-        ? "list_library_cowork_sessions"
-        : kind === "extensions"
-        ? "list_library_extensions"
-        : kind === "mcp_servers"
-        ? "list_library_mcp"
-        : kind === "cowork_skills"
-        ? "list_library_cowork_skills"
-        : kind === "skills"
-        ? "list_skills_library"
-        : kind === "codex_sessions"
-        ? "list_codex_sessions_library"
-        : kind === "codex_skills"
-        ? "list_codex_skills_library"
-        : kind === "codex_mcp"
-        ? "list_codex_mcp_library"
-        : kind === "mcp_cross"
-        ? "list_mcp_cross_library"
-        : kind === "memory_cross"
-        ? "list_memory_library"
-        : kind === "memory"
-        ? "list_claude_memory_library"
-        : kind === "codex_memory"
-        ? "list_codex_memory_library"
-        : "list_library_preferences";
-    return invoke(command);
+    const map: Record<LibraryKind, string> = {
+      code_history: "list_library_code_history",
+      cowork_sessions: "list_library_cowork_sessions",
+      extensions: "list_library_extensions",
+      mcp_servers: "list_library_mcp",
+      cowork_skills: "list_library_cowork_skills",
+      skills: "list_skills_library",
+      preferences: "list_library_preferences",
+      claude_sessions: "list_claude_sessions_library",
+      claude_skills: "list_claude_skills_library",
+      codex_sessions: "list_codex_sessions_library",
+      codex_skills: "list_codex_skills_library",
+      codex_mcp: "list_codex_mcp_library",
+      codex_preferences: "list_codex_preferences_library",
+      mcp_cross: "list_mcp_cross_library",
+      memory: "list_claude_memory_library",
+      codex_memory: "list_codex_memory_library",
+      memory_cross: "list_memory_library",
+      // sessions_cross is import/export only — not a list matrix.
+      sessions_cross: "list_codex_sessions_library",
+    };
+    return invoke(map[kind] ?? "list_library_preferences");
   },
 
   importCodexSessionToClaude(source: string): Promise<ImportResult> {

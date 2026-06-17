@@ -151,6 +151,10 @@ const EMPTY_HINTS: Record<LibraryKind, string> = {
   memory: "No CLAUDE.md in any Claude account yet.",
   codex_memory: "No AGENTS.md in any Codex account yet.",
   memory_cross: "No CLAUDE.md / AGENTS.md memory file in any account yet.",
+  claude_sessions: "No Claude Code sessions in ~/.claude/projects yet.",
+  claude_skills: "No skills in ~/.claude/skills yet.",
+  codex_preferences: "No shareable preferences set in any Codex config.toml.",
+  sessions_cross: "No sessions to import or export.",
 };
 
 /** Per-kind one-liner shown above the matrix explaining the Codex situation. */
@@ -177,6 +181,14 @@ const KIND_SCOPE_CAPTION: Partial<Record<LibraryKind, string>> = {
     "Skills per Codex account (~/.codex-<name>/skills). Toggle a cell to share a skill between accounts (live symlink).",
   codex_mcp:
     "MCP servers per Codex account (config.toml). Toggle a cell to copy a server between accounts.",
+  claude_sessions:
+    "Claude Code CLI sessions (~/.claude/projects), one column per account. Toggle 'All Claude sessions' to symlink-share the whole dir; open a project to view or delete sessions.",
+  claude_skills:
+    "Skills per Claude account (~/.claude/skills). Toggle a cell to share a skill between accounts (live symlink).",
+  codex_preferences:
+    "Codex behaviour knobs from config.toml (model, approval, sandbox). Auth + active profile stay private. Note: model_provider may reference a provider that only exists in one account.",
+  sessions_cross:
+    "Import a Codex session into Claude Code, or export a Claude session into Codex — open a project and use the per-session action.",
 };
 
 /** Synthetic DesktopInstall-shaped column for the global Codex library. Codex
@@ -210,9 +222,10 @@ const CLAUDE_CODE_MCP_COLUMN: DesktopInstall = {
 /** The three Codex-private content kinds (global to ~/.codex). */
 const CODEX_KINDS: LibraryKind[] = [
   "codex_sessions",
-  "codex_skills",
   "codex_mcp",
+  "codex_skills",
   "codex_memory",
+  "codex_preferences",
 ];
 
 interface SidebarProfileRowProps {
@@ -364,13 +377,29 @@ function SegmentedTabs({
 }
 
 const CLAUDE_KINDS: LibraryKind[] = [
-  "code_history",
-  "cowork_sessions",
-  "extensions",
+  "claude_sessions",
   "mcp_servers",
-  "cowork_skills",
+  "claude_skills",
   "memory",
   "preferences",
+];
+
+/** Every kind shown across all tabs — used for background count loading +
+ *  post-apply refresh. Keep in sync with CLAUDE_KINDS / CODEX_KINDS / Share. */
+const COUNTED_KINDS: LibraryKind[] = [
+  "claude_sessions",
+  "mcp_servers",
+  "claude_skills",
+  "memory",
+  "preferences",
+  "codex_sessions",
+  "codex_mcp",
+  "codex_skills",
+  "codex_memory",
+  "codex_preferences",
+  "skills",
+  "mcp_cross",
+  "memory_cross",
 ];
 
 export default function ContentLibraryPage() {
@@ -379,7 +408,7 @@ export default function ContentLibraryPage() {
   const [codeInstalls, setCodeInstalls] = useState<CodeInstall[]>([]);
   const [visibleIds, setVisibleIds] = useState<Set<string>>(new Set());
   const [activeTab, setActiveTab] = useState<WorkTab>("claude");
-  const [activeKind, setActiveKind] = useState<LibraryKind>("code_history");
+  const [activeKind, setActiveKind] = useState<LibraryKind>("claude_sessions");
   const [rowsByKind, setRowsByKind] = useState<
     Partial<Record<LibraryKind, LibraryRow[]>>
   >({});
@@ -495,8 +524,13 @@ export default function ContentLibraryPage() {
       }));
       return [...claudeCols, ...codexCols];
     }
-    // Within-Claude memory (CLAUDE.md): one column per Claude code install (plain ids).
-    if (activeKind === "memory") {
+    // Within-Claude kinds (memory CLAUDE.md / Code sessions / Claude skills):
+    // one column per Claude code account (~/.claude, ~/.claude-<name>), plain ids.
+    if (
+      activeKind === "memory" ||
+      activeKind === "claude_sessions" ||
+      activeKind === "claude_skills"
+    ) {
       return codeInstalls.map((c) => ({
         id: c.id,
         name: c.kind === "default" ? "Default ~/.claude" : c.name,
@@ -544,22 +578,7 @@ export default function ContentLibraryPage() {
     const out: Partial<
       Record<LibraryKind, { synced: number; total: number } | null>
     > = {};
-    for (const kind of [
-      "code_history",
-      "cowork_sessions",
-      "extensions",
-      "mcp_servers",
-      "cowork_skills",
-      "skills",
-      "preferences",
-      "codex_sessions",
-      "codex_skills",
-      "codex_mcp",
-      "mcp_cross",
-      "memory",
-      "codex_memory",
-      "memory_cross",
-    ] as LibraryKind[]) {
+    for (const kind of COUNTED_KINDS) {
       const rows = rowsByKind[kind];
       out[kind] = rows ? computeKindCount(rows) : null;
     }
@@ -653,23 +672,7 @@ export default function ContentLibraryPage() {
   // Eagerly load counts for the other kinds in the background so KindNav
   // shows N/M for everything, not just the active tab.
   useEffect(() => {
-    const others: LibraryKind[] = [
-      "code_history",
-      "cowork_sessions",
-      "extensions",
-      "mcp_servers",
-      "cowork_skills",
-      "skills",
-      "preferences",
-      "codex_sessions",
-      "codex_skills",
-      "codex_mcp",
-      "mcp_cross",
-      "memory",
-      "codex_memory",
-      "memory_cross",
-    ];
-    const todo = others.filter((k) => k !== activeKind && !rowsByKind[k]);
+    const todo = COUNTED_KINDS.filter((k) => k !== activeKind && !rowsByKind[k]);
     if (todo.length === 0 || !isTauri()) return;
     let cancelled = false;
     (async () => {
@@ -736,24 +739,7 @@ export default function ContentLibraryPage() {
       setPending(new Map());
       await loadKind(activeKind);
       // Also refresh counts so KindNav stays accurate.
-      const others = (
-        [
-          "code_history",
-          "cowork_sessions",
-          "extensions",
-          "mcp_servers",
-          "cowork_skills",
-          "skills",
-          "preferences",
-          "codex_sessions",
-          "codex_skills",
-          "codex_mcp",
-          "codex_memory",
-          "mcp_cross",
-          "memory",
-          "memory_cross",
-        ] as LibraryKind[]
-      ).filter((k) => k !== activeKind);
+      const others = COUNTED_KINDS.filter((k) => k !== activeKind);
       for (const k of others) {
         api
           .listLibrary(k)
@@ -966,7 +952,7 @@ export default function ContentLibraryPage() {
     } else if (tab === "codex") {
       setActiveKind((k) => (CODEX_KINDS.includes(k) ? k : "codex_sessions"));
     } else if (tab === "claude") {
-      setActiveKind((k) => (CLAUDE_KINDS.includes(k) ? k : "code_history"));
+      setActiveKind((k) => (CLAUDE_KINDS.includes(k) ? k : "claude_sessions"));
     }
   }, []);
 

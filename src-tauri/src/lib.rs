@@ -4125,9 +4125,21 @@ fn skills_dir_for_column(id: &str) -> Result<Option<PathBuf>, String> {
     Ok(None)
 }
 
+/// Within-Claude skills (Claude tab): ~/.claude/skills across Claude code
+/// accounts only — same matrix, no global Codex column.
+pub fn list_claude_skills_library() -> Result<Vec<LibraryRow>, String> {
+    list_skills_library_cols(None)
+}
+
+/// Cross-tool skills (Share tab): Claude code dirs + the one global Codex column.
 pub fn list_skills_library() -> Result<Vec<LibraryRow>, String> {
+    list_skills_library_cols(Some(codex_skills_dir()?))
+}
+
+/// Build the skills matrix over the Claude code columns, optionally appending a
+/// single global Codex column (`codex_dir`). One bidirectional share-state pass.
+fn list_skills_library_cols(codex_dir: Option<PathBuf>) -> Result<Vec<LibraryRow>, String> {
     let code_installs = list_code_installs()?;
-    let codex_dir = codex_skills_dir()?;
 
     // (id, name, skills_dir) per Claude column.
     let claude_cols: Vec<(String, String, PathBuf)> = code_installs
@@ -4159,7 +4171,9 @@ pub fn list_skills_library() -> Result<Vec<LibraryRow>, String> {
     for (_, _, d) in &claude_cols {
         collect(d);
     }
-    collect(&codex_dir);
+    if let Some(cd) = &codex_dir {
+        collect(cd);
+    }
 
     let is_present = |p: &Path| {
         p.is_dir()
@@ -4167,13 +4181,19 @@ pub fn list_skills_library() -> Result<Vec<LibraryRow>, String> {
                 .map(|m| m.file_type().is_symlink())
                 .unwrap_or(false)
     };
+    let group_label = if codex_dir.is_some() {
+        "Claude + Codex skills"
+    } else {
+        "Claude skills"
+    };
     let mut rows = Vec::new();
     for name in names {
-        // All columns in one share-state pass: the Claude code dirs PLUS the
-        // single global Codex dir. Bidirectional detection means the real-source
-        // column reads "shared" too (not just the symlink target).
+        // One bidirectional share-state pass over the Claude code dirs (+ the
+        // global Codex dir when cross-tool). Real source reads "shared" too.
         let mut paths: Vec<PathBuf> = claude_cols.iter().map(|(_, _, d)| d.join(&name)).collect();
-        paths.push(codex_dir.join(&name));
+        if let Some(cd) = &codex_dir {
+            paths.push(cd.join(&name));
+        }
         let present: Vec<bool> = paths.iter().map(|p| is_present(p)).collect();
         let states = symlink_share_states(&paths, &present);
 
@@ -4193,37 +4213,38 @@ pub fn list_skills_library() -> Result<Vec<LibraryRow>, String> {
             })
             .collect();
 
-        // The global Codex cell (last column). Add a hint when it's present but
-        // not part of the shared group (a real folder, or a foreign symlink).
-        let ci = claude_cols.len();
-        let codex_detail = if !present[ci] || states[ci] == "shared" {
-            None
-        } else if fs::symlink_metadata(&paths[ci])
-            .map(|m| m.file_type().is_symlink())
-            .unwrap_or(false)
-        {
-            Some("links elsewhere".to_string())
-        } else {
-            Some("real folder in ~/.codex/skills".to_string())
-        };
-        cells.push(LibraryCell {
-            install_id: CODEX_SKILLS_GLOBAL_ID.to_string(),
-            install_name: "Codex".to_string(),
-            data_dir: codex_dir.to_string_lossy().to_string(),
-            kind: "codex".to_string(),
-            state: states[ci].to_string(),
-            present: present[ci],
-            detail: codex_detail,
-            digest: None,
-            link_target_digest: symlink_target_digest(&paths[ci]),
-        });
+        // The global Codex cell (last column), only for the cross-tool matrix.
+        if let Some(cd) = &codex_dir {
+            let ci = claude_cols.len();
+            let codex_detail = if !present[ci] || states[ci] == "shared" {
+                None
+            } else if fs::symlink_metadata(&paths[ci])
+                .map(|m| m.file_type().is_symlink())
+                .unwrap_or(false)
+            {
+                Some("links elsewhere".to_string())
+            } else {
+                Some("real folder in ~/.codex/skills".to_string())
+            };
+            cells.push(LibraryCell {
+                install_id: CODEX_SKILLS_GLOBAL_ID.to_string(),
+                install_name: "Codex".to_string(),
+                data_dir: cd.to_string_lossy().to_string(),
+                kind: "codex".to_string(),
+                state: states[ci].to_string(),
+                present: present[ci],
+                detail: codex_detail,
+                digest: None,
+                link_target_digest: symlink_target_digest(&paths[ci]),
+            });
+        }
         rows.push(LibraryRow {
             id: name.clone(),
             label: name,
             description: None,
             cells,
             interactive: true,
-            group: Some("Claude + Codex skills".into()),
+            group: Some(group_label.to_string()),
         });
     }
     Ok(rows)
@@ -4686,6 +4707,371 @@ fn apply_codex_sessions_share(change: &LibraryCellChange) -> Result<bool, String
     } else {
         // Resolve the real link target from the symlink itself — no guessing.
         make_codex_sessions_independent(&target_home)
+    }
+}
+
+// ===========================================================================
+// Claude Code sessions (Claude tab) — the CLI store ~/.claude/projects, one
+// column per Claude code account (~/.claude, ~/.claude-<name>). Same model as
+// Codex sessions: a synthetic "All sessions" row that symlink-shares the whole
+// projects/ dir between accounts, plus browse-only per-project rows.
+// ===========================================================================
+
+/// (id, name, config_dir) per Claude code account.
+fn claude_session_cols() -> Result<Vec<(String, String, PathBuf)>, String> {
+    Ok(list_code_installs()?
+        .into_iter()
+        .map(|i| (i.id, i.name, PathBuf::from(i.config_dir)))
+        .collect())
+}
+
+/// Resolve a Claude code column id to its config dir.
+fn claude_config_for_column(id: &str) -> Result<Option<PathBuf>, String> {
+    Ok(claude_session_cols()?.into_iter().find(|(cid, _, _)| cid == id).map(|(_, _, d)| d))
+}
+
+pub fn list_claude_sessions_library() -> Result<Vec<LibraryRow>, String> {
+    let cols = claude_session_cols()?;
+    // Per-account projects + whole projects-dir present/state.
+    let per_col: Vec<Vec<CodeProject>> = cols
+        .iter()
+        .map(|(_, _, dir)| list_code_history(dir).unwrap_or_default())
+        .collect();
+    let ws_paths: Vec<PathBuf> = cols.iter().map(|(_, _, d)| d.join(CODE_PROJECTS_DIR)).collect();
+    let ws_present: Vec<bool> = ws_paths
+        .iter()
+        .map(|p| {
+            p.is_dir()
+                || fs::symlink_metadata(p)
+                    .map(|m| m.file_type().is_symlink())
+                    .unwrap_or(false)
+        })
+        .collect();
+    let ws_states = symlink_share_states(&ws_paths, &ws_present);
+
+    // Union of project ids, sorted by most-recent activity.
+    let mut keys: std::collections::BTreeMap<String, (String, i64)> = std::collections::BTreeMap::new();
+    for projects in &per_col {
+        for p in projects {
+            let e = keys.entry(p.id.clone()).or_insert((p.display_path.clone(), 0));
+            e.1 = e.1.max(p.last_modified_ms);
+        }
+    }
+    let mut keys: Vec<(String, String, i64)> =
+        keys.into_iter().map(|(id, (disp, t))| (id, disp, t)).collect();
+    keys.sort_by_key(|(_, _, t)| -*t);
+
+    let mut rows: Vec<LibraryRow> = Vec::with_capacity(keys.len() + 1);
+
+    // Synthetic whole-projects share row.
+    let all_cells: Vec<LibraryCell> = cols
+        .iter()
+        .enumerate()
+        .map(|(i, (id, label, _))| {
+            let n: u32 = per_col[i].iter().map(|p| p.session_count).sum();
+            let last = per_col[i].iter().map(|p| p.last_modified_ms).max().unwrap_or(0);
+            let detail = if n > 0 {
+                Some(format!(
+                    "{n} session{} · {}",
+                    if n == 1 { "" } else { "s" },
+                    if last > 0 { humanize_ago(last) } else { "—".into() }
+                ))
+            } else {
+                None
+            };
+            LibraryCell {
+                install_id: id.clone(),
+                install_name: label.clone(),
+                data_dir: ws_paths[i].to_string_lossy().to_string(),
+                kind: if id == "default" { "default".into() } else { "profile".into() },
+                state: if ws_present[i] { ws_states[i].to_string() } else { "absent".to_string() },
+                present: ws_present[i],
+                detail,
+                digest: None,
+                link_target_digest: symlink_target_digest(&ws_paths[i]),
+            }
+        })
+        .collect();
+    rows.push(LibraryRow {
+        id: CODEX_ALL_SESSIONS_ID.to_string(),
+        label: "All Claude sessions".into(),
+        description: Some("Toggle to symlink the whole ~/.claude/projects dir between accounts.".into()),
+        cells: all_cells,
+        interactive: true,
+        group: Some("Sessions".into()),
+    });
+
+    // Browse rows per project.
+    let home = std::env::var("HOME").unwrap_or_default();
+    for (pid, disp, _) in keys {
+        let cells: Vec<LibraryCell> = cols
+            .iter()
+            .enumerate()
+            .map(|(i, (id, label, _))| {
+                let proj = per_col[i].iter().find(|p| p.id == pid);
+                let n = proj.map(|p| p.session_count).unwrap_or(0);
+                let last = proj.map(|p| p.last_modified_ms).unwrap_or(0);
+                let detail = if n > 0 {
+                    Some(format!(
+                        "{n} session{} · {}",
+                        if n == 1 { "" } else { "s" },
+                        if last > 0 { humanize_ago(last) } else { "—".into() }
+                    ))
+                } else {
+                    None
+                };
+                LibraryCell {
+                    install_id: id.clone(),
+                    install_name: label.clone(),
+                    data_dir: ws_paths[i].to_string_lossy().to_string(),
+                    kind: if id == "default" { "default".into() } else { "profile".into() },
+                    state: if n > 0 { ws_states[i].to_string() } else { "absent".to_string() },
+                    present: n > 0,
+                    detail,
+                    digest: None,
+                    link_target_digest: symlink_target_digest(&ws_paths[i]),
+                }
+            })
+            .collect();
+        let label = Path::new(&disp)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .map(String::from)
+            .unwrap_or_else(|| disp.clone());
+        rows.push(LibraryRow {
+            id: pid,
+            label,
+            description: Some(disp.replace(&home, "~")),
+            cells,
+            interactive: false,
+            group: Some("Projects".into()),
+        });
+    }
+
+    rows.sort_by_key(|r| match r.group.as_deref() {
+        Some("Sessions") => 0,
+        Some("Projects") => 1,
+        _ => 9,
+    });
+    Ok(rows)
+}
+
+fn share_claude_sessions(source_config: &Path, target_config: &Path) -> Result<bool, String> {
+    let source = source_config.join(CODE_PROJECTS_DIR);
+    let target = target_config.join(CODE_PROJECTS_DIR);
+    if !source.exists() {
+        return Err("Source account has no projects/ dir yet.".to_string());
+    }
+    if path_points_to(&target, &source) {
+        return Ok(false);
+    }
+    if fs::symlink_metadata(&target).is_ok() {
+        backup_existing_path(&target, target_config, CODE_PROJECTS_DIR)?;
+    }
+    symlink_path(&source, &target)?;
+    Ok(true)
+}
+
+fn apply_claude_sessions_share(change: &LibraryCellChange) -> Result<bool, String> {
+    if change.row_id != CODEX_ALL_SESSIONS_ID {
+        return Err(
+            "Per-project Claude rows are browse-only — toggle 'All Claude sessions' to share, or export one in Share."
+                .to_string(),
+        );
+    }
+    let cols = claude_session_cols()?;
+    let target_config = cols
+        .iter()
+        .find(|(id, _, _)| id == &change.target_install_id)
+        .map(|(_, _, d)| d.clone())
+        .ok_or_else(|| format!("Unknown Claude account: {}", change.target_install_id))?;
+    if change.wants {
+        let source_config = if let Some(src) = &change.source_install_id {
+            claude_config_for_column(src)?.ok_or_else(|| format!("Unknown source: {src}"))?
+        } else {
+            cols.iter()
+                .find(|(id, _, d)| {
+                    id != &change.target_install_id && d.join(CODE_PROJECTS_DIR).is_dir()
+                })
+                .map(|(_, _, d)| d.clone())
+                .ok_or_else(|| "No account has sessions to share from.".to_string())?
+        };
+        share_claude_sessions(&source_config, &target_config)
+    } else {
+        make_dir_symlink_independent(&target_config.join(CODE_PROJECTS_DIR))
+    }
+}
+
+// ===========================================================================
+// Codex Preferences (Codex tab) — shareable behavior knobs from config.toml,
+// copy-mode between Codex homes. Auth + active-profile + [mcp_servers] are
+// excluded (auth is per-profile by design; MCP is its own kind).
+// ===========================================================================
+
+const SAFE_CODEX_PREF_KEYS: &[&str] = &[
+    "model",
+    "model_provider",
+    "model_reasoning_effort",
+    "model_reasoning_summary",
+    "model_verbosity",
+    "approval_policy",
+    "sandbox_mode",
+    "hide_agent_reasoning",
+    "file_opener",
+    "disable_response_storage",
+];
+
+/// Read the allowlisted top-level scalar prefs from a config.toml as JSON values.
+fn read_codex_prefs_at(path: &Path) -> BTreeMap<String, serde_json::Value> {
+    let mut out = BTreeMap::new();
+    let raw = match fs::read_to_string(path) {
+        Ok(r) => r,
+        Err(_) => return out,
+    };
+    let doc: toml_edit::ImDocument<String> = match raw.parse() {
+        Ok(d) => d,
+        Err(_) => return out,
+    };
+    for key in SAFE_CODEX_PREF_KEYS {
+        if let Some(item) = doc.get(key) {
+            if item.is_value() {
+                out.insert(key.to_string(), toml_item_to_json(item));
+            }
+        }
+    }
+    out
+}
+
+pub fn list_codex_preferences_library() -> Result<Vec<LibraryRow>, String> {
+    let cols = codex_profile_columns()?;
+    let maps: Vec<BTreeMap<String, serde_json::Value>> = cols
+        .iter()
+        .map(|c| read_codex_prefs_at(&c.home.join("config.toml")))
+        .collect();
+    let mut rows = Vec::new();
+    for key in SAFE_CODEX_PREF_KEYS {
+        // Only show a key if at least one account sets it.
+        if !maps.iter().any(|m| m.contains_key(*key)) {
+            continue;
+        }
+        let cells: Vec<LibraryCell> = cols
+            .iter()
+            .enumerate()
+            .map(|(i, c)| {
+                let v = maps[i].get(*key);
+                LibraryCell {
+                    install_id: c.id.clone(),
+                    install_name: c.label.clone(),
+                    data_dir: c.home.join("config.toml").to_string_lossy().to_string(),
+                    kind: c.kind.clone(),
+                    state: String::new(),
+                    present: v.is_some(),
+                    detail: v.map(compact_value_preview),
+                    digest: v.map(value_digest),
+                    link_target_digest: None,
+                }
+            })
+            .collect();
+        let mut row = LibraryRow {
+            id: key.to_string(),
+            label: key.to_string(),
+            description: None,
+            cells,
+            interactive: true,
+            group: None,
+        };
+        compute_row_states(&mut row);
+        rows.push(row);
+    }
+    Ok(rows)
+}
+
+/// Copy a preference key's value from the source account's config.toml into the
+/// target's (copy-mode). wants=false removes the key from the target.
+fn apply_codex_preferences_share(change: &LibraryCellChange) -> Result<bool, String> {
+    let key = change.row_id.as_str();
+    if !SAFE_CODEX_PREF_KEYS.contains(&key) {
+        return Err(format!("\"{key}\" is not a shareable Codex preference."));
+    }
+    let cols = codex_profile_columns()?;
+    let target_config = cols
+        .iter()
+        .find(|c| c.id == change.target_install_id)
+        .map(|c| c.home.join("config.toml"))
+        .ok_or_else(|| format!("Unknown Codex profile: {}", change.target_install_id))?;
+
+    if change.wants {
+        let value = if let Some(src) = &change.source_install_id {
+            let p = cols
+                .iter()
+                .find(|c| &c.id == src)
+                .map(|c| c.home.join("config.toml"))
+                .ok_or_else(|| format!("Unknown source: {src}"))?;
+            read_codex_prefs_at(&p).get(key).cloned()
+        } else {
+            cols.iter()
+                .filter(|c| c.id != change.target_install_id)
+                .find_map(|c| read_codex_prefs_at(&c.home.join("config.toml")).get(key).cloned())
+        }
+        .ok_or_else(|| format!("No account sets \"{key}\" to copy from."))?;
+        // No-op if already equal.
+        if read_codex_prefs_at(&target_config).get(key) == Some(&value) {
+            return Ok(false);
+        }
+        write_codex_pref_at(&target_config, key, &value)?;
+        Ok(true)
+    } else {
+        remove_codex_pref_at(&target_config, key)
+    }
+}
+
+fn write_codex_pref_at(path: &Path, key: &str, value: &serde_json::Value) -> Result<(), String> {
+    let raw = fs::read_to_string(path).unwrap_or_default();
+    let mut doc: toml_edit::DocumentMut = raw
+        .parse()
+        .map_err(|e| format!("Parse {}: {e}", path.display()))?;
+    let tv = json_to_toml_value(value)
+        .ok_or_else(|| "Unsupported preference value type.".to_string())?;
+    doc[key] = toml_edit::Item::Value(tv);
+    write_string_atomically(path, &doc.to_string())
+}
+
+fn remove_codex_pref_at(path: &Path, key: &str) -> Result<bool, String> {
+    let raw = match fs::read_to_string(path) {
+        Ok(r) => r,
+        Err(_) => return Ok(false),
+    };
+    let mut doc: toml_edit::DocumentMut = raw
+        .parse()
+        .map_err(|e| format!("Parse {}: {e}", path.display()))?;
+    let removed = doc.as_table_mut().remove(key).is_some();
+    if removed {
+        write_string_atomically(path, &doc.to_string())?;
+    }
+    Ok(removed)
+}
+
+/// Undo a directory symlink at `target`: remove it and copy back the real
+/// content it pointed at. Generic version of make_codex_sessions_independent.
+fn make_dir_symlink_independent(target: &Path) -> Result<bool, String> {
+    match fs::symlink_metadata(target) {
+        Ok(meta) if meta.file_type().is_symlink() => {
+            let real = fs::read_link(target).ok().map(|link| {
+                if link.is_absolute() {
+                    link
+                } else {
+                    target.parent().unwrap_or(Path::new("/")).join(link)
+                }
+            });
+            remove_path(target)?;
+            if let Some(real) = real {
+                if real.is_dir() {
+                    copy_dir_recursive(&real, target)?;
+                }
+            }
+            Ok(true)
+        }
+        _ => Ok(false),
     }
 }
 
@@ -5593,8 +5979,20 @@ pub fn apply_library_change(
     kind: String,
     change: LibraryCellChange,
 ) -> Result<bool, String> {
-    if kind == "skills" {
+    if kind == "skills" || kind == "claude_skills" {
         return apply_skill_share(&change);
+    }
+    if kind == "claude_sessions" {
+        return apply_claude_sessions_share(&change);
+    }
+    if kind == "codex_preferences" {
+        return apply_codex_preferences_share(&change);
+    }
+    if kind == "sessions_cross" {
+        return Err(
+            "Cross-tool sessions are import/export only — use the Import/Export action on a row."
+                .to_string(),
+        );
     }
     if kind == "mcp_cross" {
         return apply_mcp_cross_share(&change);
@@ -6957,6 +7355,21 @@ mod commands {
     }
 
     #[tauri::command]
+    pub fn list_claude_sessions_library() -> Result<Vec<LibraryRow>, String> {
+        super::list_claude_sessions_library()
+    }
+
+    #[tauri::command]
+    pub fn list_claude_skills_library() -> Result<Vec<LibraryRow>, String> {
+        super::list_claude_skills_library()
+    }
+
+    #[tauri::command]
+    pub fn list_codex_preferences_library() -> Result<Vec<LibraryRow>, String> {
+        super::list_codex_preferences_library()
+    }
+
+    #[tauri::command]
     pub fn list_mcp_cross_library() -> Result<Vec<LibraryRow>, String> {
         super::list_mcp_cross_library()
     }
@@ -7078,6 +7491,9 @@ pub fn run() {
             commands::list_codex_skills_library,
             commands::list_codex_mcp_library,
             commands::list_codex_sessions_for_project,
+            commands::list_claude_sessions_library,
+            commands::list_claude_skills_library,
+            commands::list_codex_preferences_library,
             commands::list_mcp_cross_library,
             commands::list_memory_library,
             commands::list_claude_memory_library,

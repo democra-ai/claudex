@@ -100,6 +100,31 @@ const KINDS: KindDef[] = [
     icon: Boxes,
     blurb: "config.toml",
   },
+  {
+    value: "codex_preferences",
+    label: "Preferences",
+    icon: Settings2,
+    blurb: "config.toml knobs",
+  },
+  {
+    value: "claude_sessions",
+    label: "Sessions",
+    icon: MessagesSquare,
+    blurb: "~/.claude/projects",
+  },
+  {
+    value: "claude_skills",
+    label: "Skills",
+    icon: Wrench,
+    blurb: "~/.claude/skills",
+  },
+  {
+    value: "sessions_cross",
+    label: "Sessions",
+    icon: MessagesSquare,
+    blurb: "import / export",
+    crossTool: true,
+  },
 ];
 
 interface KindNavProps {
