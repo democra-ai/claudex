@@ -120,13 +120,18 @@ function SessionList({
   const [confirmDel, setConfirmDel] = useState<string | null>(null);
   const [actBusy, setActBusy] = useState(false);
   const isCodex = kind === "codex_sessions";
+  const isClaudeCli = kind === "claude_sessions";
   const isCowork = kind === "cowork_sessions";
+  // Which world's transcript/delete commands apply (null = legacy Desktop panel).
+  const world = isCodex ? "codex" : isClaudeCli ? "claude" : null;
 
   useEffect(() => {
     let alive = true;
     setLoading(true);
     const p = isCodex
       ? api.listCodexSessionsForProject(installId, rowId)
+      : isClaudeCli
+      ? api.listClaudeSessionsForProject(installId, rowId)
       : api.listSessionsForProject(installId, rowId, isCowork);
     p.then((s) => {
       if (alive) setSessions(s);
@@ -140,20 +145,22 @@ function SessionList({
     return () => {
       alive = false;
     };
-  }, [installId, rowId, isCodex, isCowork, reload]);
+  }, [installId, rowId, isCodex, isClaudeCli, isCowork, reload]);
 
   const viewTranscript = (sid: string) => {
+    if (!world) return;
     setViewId(sid);
     setTranscript(null);
     api
-      .getSessionTranscript(installId, sid, "codex")
+      .getSessionTranscript(installId, sid, world)
       .then((t) => setTranscript(t))
       .catch((e) => setTranscript(`(${String(e)})`));
   };
   const deleteSession = async (sid: string) => {
+    if (!world) return;
     setActBusy(true);
     try {
-      await api.deleteSessionFile(installId, sid, "codex");
+      await api.deleteSessionFile(installId, sid, world);
       setConfirmDel(null);
       setReload((r) => r + 1);
       onContentChanged?.();
@@ -212,9 +219,9 @@ function SessionList({
             ) : null}
             {s.model ? <span>{s.model.replace(/\[.*\]$/, "")}</span> : null}
           </div>
-          {isCodex ? (
+          {world ? (
             <div className="mt-1.5 flex flex-wrap items-center gap-1">
-              {onImportCodexSession ? (
+              {isCodex && onImportCodexSession ? (
                 <button
                   type="button"
                   disabled={transferBusy}
@@ -224,6 +231,18 @@ function SessionList({
                 >
                   <ArrowLeftRight className="h-3 w-3" />
                   Import to Claude
+                </button>
+              ) : null}
+              {isClaudeCli && onExportClaudeSession ? (
+                <button
+                  type="button"
+                  disabled={transferBusy}
+                  onClick={() => onExportClaudeSession(rowId, s.session_id)}
+                  /* Destination-coloured: Codex indigo. */
+                  className="inline-flex items-center gap-1 rounded bg-[#4366F2]/12 px-1.5 py-0.5 font-sans text-[10px] text-[#4366F2] transition-colors hover:bg-[#4366F2]/22 disabled:opacity-50"
+                >
+                  <ArrowLeftRight className="h-3 w-3" />
+                  Export to Codex
                 </button>
               ) : null}
               <button
@@ -464,7 +483,8 @@ function RowDetail({
   const showSessions =
     ((kind === "code_history" || kind === "cowork_sessions") &&
       row.id !== "__workspace__") ||
-    (kind === "codex_sessions" && row.id !== "__all_sessions__");
+    ((kind === "codex_sessions" || kind === "claude_sessions") &&
+      row.id !== "__all_sessions__");
   const openTarget = openCell ? contentTargetFor(kind, openCell, row.id) : null;
   return (
     <div className="sheet-slide flex h-full flex-col">

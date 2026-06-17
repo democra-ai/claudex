@@ -269,6 +269,13 @@ export const api = {
     return invoke("list_codex_sessions_for_project", { installId, cwd });
   },
 
+  listClaudeSessionsForProject(
+    installId: string,
+    projectId: string,
+  ): Promise<LocalSession[]> {
+    return invoke("list_claude_sessions_for_project", { installId, projectId });
+  },
+
   // -------- Content view / edit / delete --------
   readTextFile(path: string): Promise<string> {
     return invoke("read_text_file", { path });

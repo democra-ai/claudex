@@ -4710,6 +4710,47 @@ pub fn list_codex_sessions_library() -> Result<Vec<LibraryRow>, String> {
     Ok(rows)
 }
 
+/// Drill-down: individual Claude Code CLI sessions in one project for one
+/// account (~/.claude[-<name>]/projects/<project_id>/*.jsonl).
+pub fn list_claude_sessions_for_project(
+    install_id: String,
+    project_id: String,
+) -> Result<Vec<LocalSession>, String> {
+    let config = claude_config_for_column(&install_id)?
+        .ok_or_else(|| format!("Unknown Claude account: {install_id}"))?;
+    let dir = config.join(CODE_PROJECTS_DIR).join(&project_id);
+    let mut out = Vec::new();
+    if let Ok(rd) = fs::read_dir(&dir) {
+        for e in rd.flatten() {
+            let p = e.path();
+            if p.extension().and_then(|x| x.to_str()) == Some("jsonl") {
+                let sid = p.file_stem().and_then(|s| s.to_str()).unwrap_or("").to_string();
+                if sid.is_empty() {
+                    continue;
+                }
+                let last = fs::metadata(&p)
+                    .ok()
+                    .and_then(|m| m.modified().ok())
+                    .map(system_time_to_epoch_ms)
+                    .unwrap_or(0);
+                out.push(LocalSession {
+                    session_id: sid,
+                    title: None,
+                    cwd: Some(project_id.clone()),
+                    process_name: None,
+                    model: None,
+                    created_at_ms: last,
+                    last_activity_ms: last,
+                    account_name: None,
+                    email_address: None,
+                });
+            }
+        }
+    }
+    out.sort_by_key(|s| -s.last_activity_ms);
+    Ok(out)
+}
+
 /// Drill-down: individual Codex sessions in one project (cwd) for one account.
 /// Mapped into LocalSession so the DetailSheet reuses the Claude session list.
 pub fn list_codex_sessions_for_project(
@@ -7473,6 +7514,14 @@ mod commands {
     }
 
     #[tauri::command]
+    pub fn list_claude_sessions_for_project(
+        install_id: String,
+        project_id: String,
+    ) -> Result<Vec<LocalSession>, String> {
+        super::list_claude_sessions_for_project(install_id, project_id)
+    }
+
+    #[tauri::command]
     pub fn list_claude_skills_library() -> Result<Vec<LibraryRow>, String> {
         super::list_claude_skills_library()
     }
@@ -7638,6 +7687,7 @@ pub fn run() {
             commands::list_codex_mcp_library,
             commands::list_codex_sessions_for_project,
             commands::list_claude_sessions_library,
+            commands::list_claude_sessions_for_project,
             commands::list_claude_skills_library,
             commands::list_codex_preferences_library,
             commands::read_text_file,

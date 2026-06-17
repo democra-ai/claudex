@@ -861,10 +861,12 @@ export default function ContentLibraryPage() {
   // Reverse: export a Claude Code session (resolved by its project cwd) into a
   // fresh Codex rollout. The Codex picker may need a reindex to show it.
   const handleExportClaudeSession = useCallback(
-    async (cwd: string, _sessionId: string) => {
+    async (cwd: string, sessionId: string) => {
       setImporting(true);
       try {
-        const res = await api.importClaudeSessionToCodex(cwd);
+        // Per-session export passes a real session id (precise); project-level
+        // passes "" + the cwd (newest in that project).
+        const res = await api.importClaudeSessionToCodex(sessionId || cwd);
         push(
           `Exported ${res.turns} turn${res.turns === 1 ? "" : "s"} → Codex. Resume with:  codex resume ${res.session_id}${res.picker === "maybe" ? "  (may need a Codex reindex to appear in the picker)" : ""}`,
           "success",
