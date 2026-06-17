@@ -19,6 +19,14 @@
   <img src="docs/assets/hero.png" alt="Claudex screenshot" width="880">
 </p>
 
+<p align="center">
+  <a href="docs/promo/claudex-tour.zh.mp4">
+    <img src="docs/assets/promo-poster.png" alt="Watch the Claudex tour (vertical, 70s, narrated)" width="300">
+  </a>
+  <br>
+  <sub>▶ <b>70-second tour</b> — real UI, narrated · <a href="docs/promo/claudex-tour.zh.mp4">中文</a> · <a href="docs/promo/claudex-tour.en.mp4">English</a></sub>
+</p>
+
 Two profile worlds — **Claude** (Desktop + Code) and **Codex** — each tinted with its own accent (Claude copper, Codex indigo), each with its own isolated logins, chats, settings, MCP, memory, and skills. Open several windows at once, each on a different account. Then share what you want between accounts — within a tool or across the Claude↔Codex boundary — from one matrix: skills, MCP servers, the agent memory file, and whole session histories. And import any session from one tool into the other as a fresh, resumable conversation.
 
 > **Unofficial community tool.** Profiles are isolated with public flags + env vars: Claude Desktop (Electron) via `--user-data-dir`, Claude Code via `CLAUDE_CONFIG_DIR`, and the Codex desktop app (Chromium-based) via `--user-data-dir` **plus** its own `CODEX_HOME` — because Codex keeps its OAuth token in the agent home, not the browser profile, so the web dir alone wouldn't separate accounts. Not endorsed by Anthropic or OpenAI.
