@@ -152,7 +152,9 @@ const EMPTY_HINTS: Record<LibraryKind, string> = {
   codex_skills: "No skills in ~/.codex/skills yet.",
   codex_mcp: "No MCP servers in ~/.codex/config.toml.",
   mcp_cross: "No stdio MCP servers found in Claude Code or Codex.",
-  memory: "No CLAUDE.md / AGENTS.md memory file in any account yet.",
+  memory: "No CLAUDE.md in any Claude account yet.",
+  codex_memory: "No AGENTS.md in any Codex account yet.",
+  memory_cross: "No CLAUDE.md / AGENTS.md memory file in any account yet.",
 };
 
 /** Per-kind one-liner shown above the matrix explaining the Codex situation. */
@@ -160,8 +162,12 @@ const KIND_SCOPE_CAPTION: Partial<Record<LibraryKind, string>> = {
   skills: "Skills are the one library Claude and Codex share — the Codex column links into ~/.codex/skills.",
   mcp_cross:
     "Copy stdio MCP servers between Claude Code (~/.claude.json, JSON) and Codex (~/.codex/config.toml, TOML). Toggle a cell to copy from the other side; collisions with a different config are refused.",
-  memory:
+  memory_cross:
     "Share the agent memory file (Claude CLAUDE.md ↔ Codex AGENTS.md) between any accounts — same platform or across. It's just Markdown, so it links live like a skill. Toggle a cell to link it to another account's memory.",
+  memory:
+    "Share CLAUDE.md (agent memory) between your Claude accounts — a live symlink. Toggle a cell to link it to another account's memory.",
+  codex_memory:
+    "Share AGENTS.md (agent memory) between your Codex accounts — a live symlink. Toggle a cell to link it to another account's memory.",
   extensions: "Claude-only — Codex has no extensions equivalent.",
   mcp_servers: "Claude uses JSON, Codex uses TOML — cross-tool MCP would be copy-with-transform, not yet available.",
   cowork_skills: "Claude Cowork only — these are the per-profile Cowork agent skills.",
@@ -210,6 +216,7 @@ const CODEX_KINDS: LibraryKind[] = [
   "codex_sessions",
   "codex_skills",
   "codex_mcp",
+  "codex_memory",
 ];
 
 interface SidebarProfileRowProps {
@@ -374,6 +381,7 @@ const CLAUDE_KINDS: LibraryKind[] = [
   "extensions",
   "mcp_servers",
   "cowork_skills",
+  "memory",
   "preferences",
 ];
 
@@ -472,7 +480,7 @@ export default function ContentLibraryPage() {
     if (activeKind === "mcp_cross") return [CLAUDE_CODE_MCP_COLUMN, CODEX_GLOBAL_COLUMN];
     // Memory: every account is a column — Claude code dirs (CLAUDE.md) +
     // Codex homes (AGENTS.md). Ids namespaced to match the backend cells.
-    if (activeKind === "memory") {
+    if (activeKind === "memory_cross") {
       const claudeCols: DesktopInstall[] = codeInstalls.map((c) => ({
         id: `claude-code:${c.id}`,
         name: c.kind === "default" ? "Default ~/.claude" : c.name,
@@ -498,6 +506,36 @@ export default function ContentLibraryPage() {
         is_running: false,
       }));
       return [...claudeCols, ...codexCols];
+    }
+    // Within-Claude memory (CLAUDE.md): one column per Claude code install (plain ids).
+    if (activeKind === "memory") {
+      return codeInstalls.map((c) => ({
+        id: c.id,
+        name: c.kind === "default" ? "Default ~/.claude" : c.name,
+        kind: c.kind,
+        data_dir: c.config_dir,
+        app_path: null,
+        launcher_path: null,
+        managed: c.managed,
+        is_running: false,
+      }));
+    }
+    // Within-Codex memory (AGENTS.md): one column per Codex home (plain ids).
+    if (activeKind === "codex_memory") {
+      const src =
+        codexInstalls.length > 0
+          ? codexInstalls
+          : ([{ id: "default", name: "default", kind: "default", data_dir: "~/.codex", managed: false, is_running: false }] as CodexInstall[]);
+      return src.map((c) => ({
+        id: c.id,
+        name: c.kind === "default" ? "Default" : c.name,
+        kind: c.kind,
+        data_dir: c.data_dir,
+        app_path: null,
+        launcher_path: null,
+        managed: c.managed,
+        is_running: c.is_running,
+      }));
     }
     if (activeKind !== "skills") return visibleProfiles;
     // Cross-tool Skills: Claude CODE config dirs + one global Codex column.
@@ -531,6 +569,8 @@ export default function ContentLibraryPage() {
       "codex_mcp",
       "mcp_cross",
       "memory",
+      "codex_memory",
+      "memory_cross",
     ] as LibraryKind[]) {
       const rows = rowsByKind[kind];
       out[kind] = rows ? computeKindCount(rows) : null;
@@ -638,6 +678,8 @@ export default function ContentLibraryPage() {
       "codex_mcp",
       "mcp_cross",
       "memory",
+      "codex_memory",
+      "memory_cross",
     ];
     const todo = others.filter((k) => k !== activeKind && !rowsByKind[k]);
     if (todo.length === 0 || !isTauri()) return;
@@ -1097,7 +1139,7 @@ export default function ContentLibraryPage() {
                   setSelection((current) => (current?.type === "row" ? null : current));
                 }}
                 counts={counts}
-                only={["skills", "mcp_cross", "memory"]}
+                only={["skills", "mcp_cross", "memory_cross"]}
                 heading="Cross-tool sharing"
               />
               <p className="mt-1 flex items-start gap-1.5 px-3 font-sans text-[10px] leading-snug text-muted-foreground/70">
@@ -1135,7 +1177,7 @@ export default function ContentLibraryPage() {
 
         {KIND_SCOPE_CAPTION[activeKind] ? (
           <div className="flex items-center gap-2 rounded-md border border-border/60 bg-muted/30 px-3 py-1.5 font-sans text-[11px] text-muted-foreground">
-            {activeKind === "skills" || activeKind === "mcp_cross" || activeKind === "memory" ? (
+            {activeKind === "skills" || activeKind === "mcp_cross" || activeKind === "memory_cross" ? (
               <span className="h-2 w-2 shrink-0 rounded-[2px] bg-foreground" />
             ) : activeTab === "codex" ? (
               <CodexMark className="h-3 w-3 shrink-0 text-[#4366F2]" />

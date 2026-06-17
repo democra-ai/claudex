@@ -5303,7 +5303,8 @@ struct MemoryCol {
     path: PathBuf,
 }
 
-fn memory_columns() -> Result<Vec<MemoryCol>, String> {
+/// Within-Claude memory columns: one CLAUDE.md per Claude code install (plain ids).
+fn claude_memory_columns() -> Result<Vec<MemoryCol>, String> {
     let mut cols = Vec::new();
     for inst in list_code_installs()? {
         let label = if inst.kind == "default" {
@@ -5312,25 +5313,49 @@ fn memory_columns() -> Result<Vec<MemoryCol>, String> {
             inst.name.clone()
         };
         cols.push(MemoryCol {
-            id: format!("{MEMORY_CLAUDE_PREFIX}{}", inst.id),
+            id: inst.id.clone(),
             label,
             kind: "claude".to_string(),
             path: PathBuf::from(inst.config_dir).join(MEMORY_CLAUDE_FILE),
         });
     }
-    for c in codex_profile_columns()? {
-        cols.push(MemoryCol {
-            id: format!("{MEMORY_CODEX_PREFIX}{}", c.id),
-            label: format!("Codex {}", c.label),
-            kind: "codex".to_string(),
-            path: c.home.join(MEMORY_CODEX_FILE),
-        });
-    }
     Ok(cols)
 }
 
-fn memory_path_for_column(id: &str) -> Result<Option<PathBuf>, String> {
-    Ok(memory_columns()?.into_iter().find(|c| c.id == id).map(|c| c.path))
+/// Within-Codex memory columns: one AGENTS.md per Codex home (plain ids).
+fn codex_memory_columns() -> Result<Vec<MemoryCol>, String> {
+    Ok(codex_profile_columns()?
+        .into_iter()
+        .map(|c| MemoryCol {
+            id: c.id,
+            label: c.label,
+            kind: "codex".to_string(),
+            path: c.home.join(MEMORY_CODEX_FILE),
+        })
+        .collect())
+}
+
+/// Cross-platform memory columns: Claude CLAUDE.md + Codex AGENTS.md, ids
+/// namespaced (claude-code:/codex:) because both worlds use "default"/"profile:*".
+fn memory_columns() -> Result<Vec<MemoryCol>, String> {
+    let mut cols = Vec::new();
+    for c in claude_memory_columns()? {
+        cols.push(MemoryCol {
+            id: format!("{MEMORY_CLAUDE_PREFIX}{}", c.id),
+            label: c.label,
+            kind: c.kind,
+            path: c.path,
+        });
+    }
+    for c in codex_memory_columns()? {
+        cols.push(MemoryCol {
+            id: format!("{MEMORY_CODEX_PREFIX}{}", c.id),
+            label: format!("Codex {}", c.label),
+            kind: c.kind,
+            path: c.path,
+        });
+    }
+    Ok(cols)
 }
 
 /// A path is a "real" memory file (regular file, not a symlink).
@@ -5346,10 +5371,9 @@ fn memory_present(p: &Path) -> bool {
             .unwrap_or(false)
 }
 
-/// The Memory matrix: a single row, one column per account (Claude code dirs +
-/// Codex homes). Symlink-share, bidirectional state via symlink_share_states.
-pub fn list_memory_library() -> Result<Vec<LibraryRow>, String> {
-    let cols = memory_columns()?;
+/// The Memory matrix for a given column set: a single row, one column per
+/// account. Symlink-share, bidirectional state via symlink_share_states.
+fn memory_matrix_rows(cols: &[MemoryCol]) -> Vec<LibraryRow> {
     let paths: Vec<PathBuf> = cols.iter().map(|c| c.path.clone()).collect();
     let present: Vec<bool> = paths.iter().map(|p| memory_present(p)).collect();
     let states = symlink_share_states(&paths, &present);
@@ -5376,29 +5400,32 @@ pub fn list_memory_library() -> Result<Vec<LibraryRow>, String> {
             link_target_digest: symlink_target_digest(&paths[i]),
         })
         .collect();
-    Ok(vec![LibraryRow {
+    vec![LibraryRow {
         id: "memory".to_string(),
         label: "Agent memory".to_string(),
-        description: Some("CLAUDE.md ↔ AGENTS.md".to_string()),
+        description: Some("Markdown — shares like a skill".to_string()),
         cells,
         interactive: true,
         group: None,
-    }])
+    }]
 }
 
-/// Share the memory file: symlink the target account's memory file at the
-/// source's. The target link keeps its own basename (CLAUDE.md / AGENTS.md) and
-/// points at the source file, so cross-tool sharing bridges the filename gap.
-/// Non-destructive: refuses to clobber a real file / foreign symlink.
-fn apply_memory_share(change: &LibraryCellChange) -> Result<bool, String> {
-    let target_link = memory_path_for_column(&change.target_install_id)?
+/// Share the memory file within a column set: symlink the target account's
+/// memory file at the source's. The target link keeps its own basename
+/// (CLAUDE.md / AGENTS.md) and points at the source, so cross-tool sharing
+/// bridges the filename gap. Non-destructive: refuses to clobber a real file.
+fn apply_memory_share_in(
+    cols: &[MemoryCol],
+    change: &LibraryCellChange,
+) -> Result<bool, String> {
+    let path_for = |id: &str| cols.iter().find(|c| c.id == id).map(|c| c.path.clone());
+    let target_link = path_for(&change.target_install_id)
         .ok_or_else(|| format!("Unknown memory column: {}", change.target_install_id))?;
 
     if change.wants {
         let source_path = if let Some(src) = &change.source_install_id {
-            memory_path_for_column(src)?.ok_or_else(|| format!("Unknown source: {src}"))?
+            path_for(src).ok_or_else(|| format!("Unknown source: {src}"))?
         } else {
-            let cols = memory_columns()?;
             // Prefer a real-file source over a symlink (avoids symlink chains).
             cols.iter()
                 .find(|c| c.id != change.target_install_id && is_real_file(&c.path))
@@ -5442,6 +5469,30 @@ fn apply_memory_share(change: &LibraryCellChange) -> Result<bool, String> {
     }
 }
 
+/// Cross-platform memory (Share tab): CLAUDE.md ↔ AGENTS.md across all accounts.
+pub fn list_memory_library() -> Result<Vec<LibraryRow>, String> {
+    Ok(memory_matrix_rows(&memory_columns()?))
+}
+fn apply_memory_share(change: &LibraryCellChange) -> Result<bool, String> {
+    apply_memory_share_in(&memory_columns()?, change)
+}
+
+/// Within-Claude memory (Claude tab): CLAUDE.md across Claude accounts.
+pub fn list_claude_memory_library() -> Result<Vec<LibraryRow>, String> {
+    Ok(memory_matrix_rows(&claude_memory_columns()?))
+}
+fn apply_claude_memory_share(change: &LibraryCellChange) -> Result<bool, String> {
+    apply_memory_share_in(&claude_memory_columns()?, change)
+}
+
+/// Within-Codex memory (Codex tab): AGENTS.md across Codex accounts.
+pub fn list_codex_memory_library() -> Result<Vec<LibraryRow>, String> {
+    Ok(memory_matrix_rows(&codex_memory_columns()?))
+}
+fn apply_codex_memory_share(change: &LibraryCellChange) -> Result<bool, String> {
+    apply_memory_share_in(&codex_memory_columns()?, change)
+}
+
 pub fn apply_library_change(
     kind: String,
     change: LibraryCellChange,
@@ -5461,8 +5512,14 @@ pub fn apply_library_change(
     if kind == "codex_sessions" {
         return apply_codex_sessions_share(&change);
     }
-    if kind == "memory" {
+    if kind == "memory_cross" {
         return apply_memory_share(&change);
+    }
+    if kind == "memory" {
+        return apply_claude_memory_share(&change);
+    }
+    if kind == "codex_memory" {
+        return apply_codex_memory_share(&change);
     }
     let installs = list_desktop_installs()?;
     let target = installs
@@ -6814,6 +6871,16 @@ mod commands {
     }
 
     #[tauri::command]
+    pub fn list_claude_memory_library() -> Result<Vec<LibraryRow>, String> {
+        super::list_claude_memory_library()
+    }
+
+    #[tauri::command]
+    pub fn list_codex_memory_library() -> Result<Vec<LibraryRow>, String> {
+        super::list_codex_memory_library()
+    }
+
+    #[tauri::command]
     pub fn list_library_preferences() -> Result<Vec<LibraryRow>, String> {
         super::list_preferences_library()
     }
@@ -6917,6 +6984,8 @@ pub fn run() {
             commands::list_codex_sessions_for_project,
             commands::list_mcp_cross_library,
             commands::list_memory_library,
+            commands::list_claude_memory_library,
+            commands::list_codex_memory_library,
             commands::list_library_preferences,
             commands::apply_library_changes,
             commands::list_library_code_history,

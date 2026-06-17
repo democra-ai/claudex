@@ -58,11 +58,23 @@ const KINDS: KindDef[] = [
     crossTool: true,
   },
   {
-    value: "memory",
+    value: "memory_cross",
     label: "Memory",
     icon: NotebookText,
     blurb: "CLAUDE.md ↔ AGENTS.md",
     crossTool: true,
+  },
+  {
+    value: "memory",
+    label: "Memory",
+    icon: NotebookText,
+    blurb: "CLAUDE.md across accounts",
+  },
+  {
+    value: "codex_memory",
+    label: "Memory",
+    icon: NotebookText,
+    blurb: "AGENTS.md across accounts",
   },
   {
     value: "preferences",

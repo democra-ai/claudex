@@ -282,7 +282,9 @@ export type LibraryKind =
   | "codex_skills"
   | "codex_mcp"
   | "mcp_cross"
-  | "memory";
+  | "memory"
+  | "codex_memory"
+  | "memory_cross";
 
 /** Result of importing a session from one tool into the other. */
 export type ImportResult = {
