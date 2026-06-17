@@ -19,122 +19,84 @@
     position: relative;
   }
 
-  /* Warm radial wash + subtle copper specks */
+  /* Tri-accent wash: copper (Claude) bottom-left, indigo (Codex) top-right,
+     a faint green (Share) center — the three tab colors as negative space. */
   body::before {
     content: '';
     position: absolute; inset: 0;
     background:
-      radial-gradient(circle at 22% 28%, rgba(201,100,66,0.07) 0, transparent 45%),
-      radial-gradient(circle at 78% 72%, rgba(201,100,66,0.05) 0, transparent 45%);
+      radial-gradient(circle at 18% 82%, rgba(201,100,66,0.10) 0, transparent 42%),
+      radial-gradient(circle at 84% 16%, rgba(67,102,242,0.09) 0, transparent 42%),
+      radial-gradient(circle at 50% 52%, rgba(47,158,99,0.05) 0, transparent 55%);
     pointer-events: none;
   }
 
-  /* Two ghosted card silhouettes in the background — visual echo of the
-     stacked logo, the "multiple Claudes" idea told in negative space. */
+  /* Two ghosted rounded-square silhouettes — the "multiple accounts" idea,
+     one copper, one indigo, told in negative space. */
   .ghost {
     position: absolute;
     width: 360px; height: 360px;
-    border-radius: 72px;
-    background: #c96442;
+    border-radius: 78px;
     pointer-events: none;
   }
-  .ghost.one {
-    top: -110px; right: -120px;
-    opacity: 0.06;
-    transform: rotate(8deg);
-  }
-  .ghost.two {
-    bottom: -90px; left: -110px;
-    opacity: 0.05;
-    transform: rotate(-12deg);
-  }
+  .ghost.one { top: -120px; right: -120px; background: #4366F2; opacity: 0.07; transform: rotate(8deg); }
+  .ghost.two { bottom: -100px; left: -110px; background: #c96442; opacity: 0.07; transform: rotate(-12deg); }
 
   .frame {
-    position: relative;
-    z-index: 1;
-    height: 100%;
-    display: flex; flex-direction: column;
-    align-items: center;
-    padding: 160px 80px 100px;
+    position: relative; z-index: 1; height: 100%;
+    display: flex; flex-direction: column; align-items: center;
+    padding: 150px 80px 96px;
   }
 
   .logo {
-    width: 280px; height: 280px;
-    margin-bottom: 70px;
-    filter: drop-shadow(0 24px 48px rgba(61,57,41,0.18))
-            drop-shadow(0 4px 12px rgba(61,57,41,0.08));
+    width: 264px; height: 264px;
+    margin-bottom: 40px;
+    filter: drop-shadow(0 24px 48px rgba(61,57,41,0.18)) drop-shadow(0 4px 12px rgba(61,57,41,0.08));
+  }
+
+  /* Three accent dots — Claude · Codex · Share. The Share dot glows green. */
+  .accents { display: flex; gap: 26px; align-items: center; margin-bottom: 54px; }
+  .dot { width: 18px; height: 18px; border-radius: 50%; }
+  .dot.claude { background: #c96442; }
+  .dot.codex  { background: #4366F2; }
+  .dot.share  { background: #2f9e63; box-shadow: 0 0 0 4px rgba(47,158,99,0.16), 0 0 16px 3px rgba(47,158,99,0.55); }
+  .accents .lbl {
+    font-family: "JetBrains Mono", monospace; font-size: 15px;
+    letter-spacing: 0.18em; text-transform: uppercase; color: rgba(131,120,107,0.7);
+    margin-left: 6px;
   }
 
   .headline {
     font-family: "PingFang SC", "Hiragino Sans GB", -apple-system, system-ui;
-    font-size: 80px;
-    font-weight: 600;
-    line-height: 1.22;
-    text-align: center;
-    letter-spacing: -0.01em;
-    color: #3d3929;
-    margin-bottom: 18px;
+    font-size: 78px; font-weight: 600; line-height: 1.24;
+    text-align: center; letter-spacing: -0.01em; color: #3d3929;
+    margin-bottom: 16px;
   }
-  .headline .accent {
-    color: #c96442;
-  }
-  .headline .ellipsis {
-    color: #c96442;
-    font-family: "Fraunces", Georgia, serif;
-    font-style: italic;
-    font-weight: 400;
-    letter-spacing: 0.02em;
-  }
+  .headline .c-claude { color: #c96442; }
+  .headline .c-codex  { color: #4366F2; }
+  .headline .ellipsis { color: #2f9e63; font-family: "Fraunces", Georgia, serif; font-style: italic; font-weight: 400; }
 
-  .divider {
-    width: 56px; height: 2px;
-    background: #c96442;
-    opacity: 0.6;
-    margin: 50px 0 36px;
-  }
+  .divider { width: 56px; height: 2px; background: #c96442; opacity: 0.55; margin: 46px 0 34px; }
 
   .brand {
     font-family: "Fraunces", "Iowan Old Style", Georgia, serif;
-    font-style: italic;
-    font-weight: 500;
-    font-size: 68px;
-    color: #c96442;
-    letter-spacing: -0.015em;
-    line-height: 1;
-    margin-bottom: 22px;
+    font-style: italic; font-weight: 500; font-size: 66px;
+    color: #c96442; letter-spacing: -0.015em; line-height: 1; margin-bottom: 22px;
   }
 
   .subtitle {
     font-family: "PingFang SC", -apple-system, system-ui;
-    font-size: 26px;
-    font-weight: 400;
-    color: #83786b;
-    letter-spacing: 0.06em;
-    text-align: center;
-    line-height: 1.65;
+    font-size: 25px; font-weight: 400; color: #83786b;
+    letter-spacing: 0.05em; text-align: center; line-height: 1.7;
   }
-  .subtitle .emphasis {
-    color: #3d3929;
-    font-weight: 500;
-  }
+  .subtitle .emphasis { color: #3d3929; font-weight: 500; }
+  .subtitle .green { color: #2f9e63; font-weight: 500; }
 
-  .footer {
-    margin-top: auto;
-    display: flex; flex-direction: column; align-items: center; gap: 6px;
-  }
-  .footer .url {
-    font-family: "JetBrains Mono", monospace;
-    font-size: 20px;
-    color: #83786b;
-    letter-spacing: 0.04em;
-  }
+  .footer { margin-top: auto; display: flex; flex-direction: column; align-items: center; gap: 6px; }
+  .footer .url { font-family: "JetBrains Mono", monospace; font-size: 20px; color: #83786b; letter-spacing: 0.04em; }
   .footer .tag {
-    font-family: "Geist", sans-serif;
-    font-size: 12px;
-    color: rgba(131,120,107,0.5);
-    letter-spacing: 0.32em;
-    text-transform: uppercase;
-    margin-top: 6px;
+    font-family: "Geist", sans-serif; font-size: 12px; color: rgba(131,120,107,0.5);
+    letter-spacing: 0.32em; text-transform: uppercase; margin-top: 6px;
   }
 </style>
 </head>
@@ -145,18 +107,25 @@
   <div class="frame">
     <img class="logo" src="../../src-tauri/icons/icon.png" alt="Claudex">
 
+    <div class="accents">
+      <span class="dot claude"></span>
+      <span class="dot codex"></span>
+      <span class="dot share"></span>
+      <span class="lbl">Claude · Codex · Share</span>
+    </div>
+
     <div class="headline">
-      Claude 和 Codex<br>
-      <span class="accent">多账号</span>,一台 Mac<span class="ellipsis">。</span>
+      <span class="c-claude">Claude</span> 和 <span class="c-codex">Codex</span><br>
+      多账号,一台 Mac<span class="ellipsis">。</span>
     </div>
 
     <div class="divider"></div>
 
     <div class="brand">Claudex</div>
     <div class="subtitle">
-      Claude Desktop · Code · Codex<br>
-      多账号完全隔离,各自独立登录<br>
-      <span class="emphasis">Skills 跨工具共享</span>
+      每个账号完全隔离,各自独立登录<br>
+      Skills · MCP · 记忆 · 会话<br>
+      <span class="green">同平台 / 跨平台 自由共享</span>
     </div>
 
     <div class="footer">

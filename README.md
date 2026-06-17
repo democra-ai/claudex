@@ -5,7 +5,7 @@
 <h1 align="center">Claudex</h1>
 
 <p align="center">
-  Run multiple <b>Claude</b> and <b>Codex</b> accounts side by side on macOS — fully isolated profiles, with cross-tool skill sharing.
+  Run multiple <b>Claude</b> and <b>Codex</b> accounts side by side on macOS — fully isolated profiles, with skills, MCP servers, memory, and sessions shareable within and across both tools.
 </p>
 
 <p align="center">
@@ -19,18 +19,20 @@
   <img src="docs/assets/hero.png" alt="Claudex screenshot" width="880">
 </p>
 
-Two walled-off profile worlds — **Claude** (Desktop + Code) and **Codex** — each with its own isolated logins, chats, settings, MCP, and skills. Open several windows at once, each on a different account. Skills are the one library both tools share: link a `SKILL.md` from Claude into Codex (or between profiles) right from the matrix. And import a session from one tool into the other as a fresh, resumable conversation.
+Two profile worlds — **Claude** (Desktop + Code) and **Codex** — each tinted with its own accent (Claude copper, Codex indigo), each with its own isolated logins, chats, settings, MCP, memory, and skills. Open several windows at once, each on a different account. Then share what you want between accounts — within a tool or across the Claude↔Codex boundary — from one matrix: skills, MCP servers, the agent memory file, and whole session histories. And import any session from one tool into the other as a fresh, resumable conversation.
 
-> **Unofficial community tool.** Uses public Electron / Chromium flags (`--user-data-dir`) and the Claude Code env var (`CLAUDE_CONFIG_DIR`) to isolate profiles. Both Claude Desktop and the Codex desktop app are Chromium-based and honor `--user-data-dir`, so the same mechanism isolates each. Not endorsed by Anthropic or OpenAI.
+> **Unofficial community tool.** Profiles are isolated with public flags + env vars: Claude Desktop (Electron) via `--user-data-dir`, Claude Code via `CLAUDE_CONFIG_DIR`, and the Codex desktop app (Chromium-based) via `--user-data-dir` **plus** its own `CODEX_HOME` — because Codex keeps its OAuth token in the agent home, not the browser profile, so the web dir alone wouldn't separate accounts. Not endorsed by Anthropic or OpenAI.
 
 ## Features
 
-- **Two worlds, one window** — a Claude region and a Codex region in the sidebar, each with its own `+` to add a profile and per-profile delete. Each profile is a Desktop launcher (`.app`) pointed at its own `--user-data-dir`, so logins never collide.
+- **Two worlds, three accents** — Claude, Codex, and Share tabs, each retinting the whole UI to its own color (Claude copper, Codex indigo, Share green). Every profile gets its own identity color; all profiles are equal — even the original install is just another profile.
+- **Fully isolated accounts** — each profile is a Desktop launcher (`.app`) with its own `--user-data-dir` (and, for Codex, its own `CODEX_HOME` + file-backed auth), so logins, chats, and tokens never collide.
 - **One click, two apps** *(Claude)* — adding a Claude profile creates the Desktop launcher (`Claude WORK.app`) *and* the Code CLI alias (`claude-work`) together.
-- **Live status** — the sidebar polls every 10 s; the running profile gets a pulsing dot and a `LIVE` pill. Launch any profile with ▶.
-- **Cross-tool skill sharing** — Skills (`SKILL.md` dirs) are the one surface Claude and Codex share. The Skills matrix shows your Claude Code profiles **and** a global Codex column; toggle a cell to symlink a skill across the boundary. Non-destructive — it never clobbers a skill it didn't create.
-- **Content matrix** — every profile × every content item in one grid, with five-state glyphs (■ shared / ● copied / ◐ diverged / ○ independent / · absent). Per-kind captions say honestly what's cross-tool (Skills) vs Claude-only (extensions, MCP, sessions, preferences).
-- **Cross-tool import** — bring a Codex session into Claude Code (or vice-versa) as a brand-new, resumable session. `convert codex claude` parses the Codex rollout and writes a fresh `~/.claude/projects/…` transcript you can `claude --resume`. Import, not sync — see [How it works](#how-it-works).
+- **Share anything, anywhere** — skills, MCP servers, the agent memory file (`CLAUDE.md` / `AGENTS.md`), and whole session histories — shareable **between accounts of the same tool** and **across the Claude↔Codex boundary**, from one matrix. Symlinked surfaces (skills, memory, sessions) propagate live; format-mismatched ones (MCP JSON↔TOML) copy with transform. Non-destructive — never clobbers something it didn't create; replaced content is backed up first.
+- **Per-project sessions** — both tools' sessions are grouped by project. Toggle "All sessions" to symlink a whole history between accounts, or drill into a project to import/export an individual session.
+- **Cross-tool import & export** — bring a Codex session into Claude Code, *or* export a Claude Code session into Codex, as a brand-new resumable conversation. Import, not sync — see [How it works](#how-it-works).
+- **Live status** — the running profile gets a pulsing dot and a `LIVE` pill; launch any profile with ▶.
+- **Safe by design** — delete lives in the profile's detail panel (never an easy-to-misclick row button); erasing real data is an explicit opt-in, guarded so it can never escape the profile's own directory.
 - **Profile detail** *(Claude)* — today's tokens, rolling 5h / 7d session counts, pace vs your own baseline, account identities, storage breakdown, sharing graph.
 - **CLI included** — `add`, `list`, `status`, `convert`, `repair`, `remove`.
 
@@ -80,9 +82,11 @@ CLI equivalent: `claude-multiprofile add`.
 
 **Claude Desktop** is an Electron app and honors `--user-data-dir`, which relocates all app state (auth, chats, settings, MCP, projects) to a directory of your choosing. The launcher is a tiny AppleScript bundle: `open -n -a Claude --args --user-data-dir=/path/to/profile`. Different folder → different instance.
 
-**Claude Code** honors the `CLAUDE_CONFIG_DIR` env var. The OAuth token in macOS Keychain is keyed by a SHA-256 of that path, so swapping the env var swaps the auth entirely.
+**Claude Code** honors the `CLAUDE_CONFIG_DIR` env var, so each profile reads/writes its own config dir (`~/.claude-<name>`).
 
-**Sharing.** Two models. Extensions and skills are *symlinked* — edits propagate live both ways. MCP servers and preferences are *copy-on-apply* — you can't symlink a JSON key, so the value is written atomically (temp + rename) at Apply time.
+**Codex** is Chromium-based and honors `--user-data-dir` too — but that only isolates the *web* layer. Codex's OAuth token lives in its **agent home** (`$CODEX_HOME`, default `~/.codex`), shared by every instance regardless of `--user-data-dir`. So a Codex profile gets all three: its own `--user-data-dir`, its own `CODEX_HOME` (`~/.codex-<name>`, passed via `open --env`), and `cli_auth_credentials_store = "file"` seeded into that home — the last one because Codex otherwise defaults to a *global* macOS-Keychain token that `CODEX_HOME` can't separate. Launch via `open -n -a Codex --env CODEX_HOME=… --args --user-data-dir=…`.
+
+**Sharing.** Two models. Skills, the memory file, session histories, and extensions are *symlinked* — edits propagate live, and share-state is detected bidirectionally (the real source and every link both read as **shared**). MCP servers and preferences are *copy-on-apply* — you can't symlink a JSON/TOML key, so the value is written atomically (temp + rename) at Apply time; cross-tool MCP additionally transforms between Claude's JSON and Codex's TOML.
 
 <p align="center">
   <img src="docs/assets/share-symlink.svg" alt="Animated illustration of two profile folders; one extension subfolder in 'work' is replaced with a symlink to the same folder in 'default', showing live two-way sharing." width="720">
@@ -92,15 +96,17 @@ CLI equivalent: `claude-multiprofile add`.
 
 ## The matrix
 
-Rows are content items, columns are the profiles you've checked. Each cell encodes share state as both a glyph and a color (legible at distance and for colorblind users):
+Rows are content items, columns are the accounts (each with its own identity color). Each cell encodes share state as both a glyph and a color, legible at distance and for colorblind users:
 
-| Glyph | State | Meaning |
-|-------|-------|---------|
-| ■ | Shared | Live symlink between ≥ 2 profiles — edits propagate |
-| ● | Copied | One-shot copy, currently aligned |
-| ◐ | Diverged | Same item, different values across profiles |
-| ○ | Independent | Present here, not aligned with any other profile |
-| · | Absent | Not in this profile |
+| Marker | State | Meaning |
+|--------|-------|---------|
+| 🟢 green glowing dot | Shared | Live symlink relationship — the real source **and** every link read shared; edits propagate |
+| ○ in the account's color | Independent | Present here, not linked to any other account |
+| ● | Copied | One-shot copy (copy-mode kinds), currently aligned |
+| ◐ | Diverged | Same item, different values across accounts (copy-mode) |
+| · | Absent | Not in this account |
+
+Green is reserved for **shared** everywhere, so each account's identity color is picked from a green-free palette — an independent cell can never be mistaken for a shared one.
 
 ## CLI reference
 

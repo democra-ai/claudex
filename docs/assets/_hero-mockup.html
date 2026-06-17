@@ -298,7 +298,7 @@
     color: var(--dim);
     font-variant-numeric: tabular-nums;
   }
-  .col-cell .pcount .shared { color: var(--copper); margin-right: 4px; }
+  .col-cell .pcount .shared { color: #2f9e63; margin-right: 4px; }
   .col-cell .pcount .copied { color: var(--fg); }
 
   .group-header {
@@ -360,7 +360,13 @@
     font-feature-settings: 'tnum' 1;
   }
   .glyph-cell.default-col { background: rgba(245,244,238,0.35); }
-  .glyph-shared { color: var(--copper); }
+  /* Shared is now a GREEN GLOWING DOT — the universal "live link" marker,
+     distinct from each tab's accent. */
+  .glyph-shared {
+    display: inline-block; width: 13px; height: 13px; border-radius: 50%;
+    background: #2f9e63; vertical-align: middle; font-size: 0;
+    box-shadow: 0 0 0 3px rgba(47,158,99,0.16), 0 0 10px 2px rgba(47,158,99,0.55);
+  }
   .glyph-copied { color: var(--fg); }
   .glyph-diverged { color: var(--amber); }
   .glyph-indep { color: var(--dim); }
@@ -625,7 +631,7 @@
         <div class="profile-row">
           <div class="cb"></div>
           <div style="display:flex;align-items:center;gap:8px;min-width:0;">
-            <span class="dot"></span>
+            <span class="dot" style="background:#7c5cd6;"></span>
             <span class="name">work</span>
           </div>
           <span></span>
@@ -634,7 +640,7 @@
         <div class="profile-row">
           <div class="cb"></div>
           <div style="display:flex;align-items:center;gap:8px;min-width:0;">
-            <span class="dot"></span>
+            <span class="dot" style="background:#d98a2b;"></span>
             <span class="name">personal</span>
           </div>
           <span></span>
