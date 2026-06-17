@@ -16,6 +16,7 @@ import type {
 } from "@/types";
 import { KindNav, computeKindCount } from "./KindNav";
 import { Matrix } from "./Matrix";
+import { pendingKeyFor, type PendingChange } from "./pending";
 import { DetailSheet, type Selection } from "./DetailSheet";
 import { PendingBar } from "./PendingBar";
 import { DeleteProfileButton } from "./DeleteProfileButton";
@@ -386,7 +387,12 @@ export default function ContentLibraryPage() {
   const [rowsByKind, setRowsByKind] = useState<
     Partial<Record<LibraryKind, LibraryRow[]>>
   >({});
-  const [pending, setPending] = useState<Map<string, boolean>>(new Map());
+  // Pending toggles. The Map VALUE carries the structured (rowId, installId,
+  // wants) so we never parse an ambiguous colon-joined key — install ids are
+  // namespaced (claude-code:default, profile:<name>, codex:profile:<name>) and
+  // some row ids contain colons (preferences "scope:key"), so any string split
+  // would corrupt them. The key uses a   delimiter that can't collide.
+  const [pending, setPending] = useState<Map<string, PendingChange>>(new Map());
   const [selection, setSelection] = useState<Selection>(null);
   const [busy, setBusy] = useState(false);
   const [applying, setApplying] = useState(false);
@@ -661,7 +667,7 @@ export default function ContentLibraryPage() {
       const row = rows?.find((r) => r.id === rowId);
       const cell = row?.cells.find((c) => c.install_id === installId);
       if (!cell) return;
-      const key = `${rowId}:${installId}`;
+      const key = pendingKeyFor(rowId, installId);
       setPending((current) => {
         const next = new Map(current);
         // For symlink content, "currently shared" is what we should compare —
@@ -674,7 +680,7 @@ export default function ContentLibraryPage() {
         if (wantsShared === currentShared && cell.present === wantsShared) {
           next.delete(key);
         } else {
-          next.set(key, wantsShared);
+          next.set(key, { rowId, installId, wants: wantsShared });
         }
         return next;
       });
@@ -685,10 +691,7 @@ export default function ContentLibraryPage() {
   const handleApply = useCallback(async () => {
     if (pending.size === 0) return;
     const changes: LibraryCellChange[] = [];
-    for (const [key, wants] of pending.entries()) {
-      const sep = key.lastIndexOf(":");
-      const rowId = key.slice(0, sep);
-      const installId = key.slice(sep + 1);
+    for (const { rowId, installId, wants } of pending.values()) {
       changes.push({ row_id: rowId, target_install_id: installId, wants });
     }
     setApplying(true);

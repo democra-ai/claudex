@@ -4,13 +4,14 @@ import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import type { DesktopInstall, LibraryRow } from "@/types";
 import { MatrixCell } from "./MatrixCell";
+import type { PendingChange } from "./pending";
 import { Glyph, STATE_GLYPH } from "./Glyph";
 
 interface MatrixProps {
   rows: LibraryRow[];
   /** Profiles to render as columns, ordered. */
   profiles: DesktopInstall[];
-  pending: Map<string, boolean>;
+  pending: Map<string, PendingChange>;
   onCellToggle: (rowId: string, installId: string, nextPresent: boolean) => void;
   onRowSelect: (rowId: string | null) => void;
   selectedRowId: string | null;

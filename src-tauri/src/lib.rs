@@ -4500,19 +4500,27 @@ fn share_codex_sessions(source_home: &Path, target_home: &Path) -> Result<bool, 
     Ok(true)
 }
 
-/// Undo a sessions symlink: remove it and copy the source content back so the
-/// target ends up standalone.
-fn make_codex_sessions_independent(
-    source_home: &Path,
-    target_home: &Path,
-) -> Result<bool, String> {
-    let source = source_home.join(CODEX_SESSIONS_DIR);
+/// Undo a sessions symlink: remove it and copy back the content it ACTUALLY
+/// pointed at (resolved from the symlink itself, not a guessed source — with
+/// 3+ accounts the "first other column" can be the wrong one). The target ends
+/// up standalone with the exact sessions it was showing.
+fn make_codex_sessions_independent(target_home: &Path) -> Result<bool, String> {
     let target = target_home.join(CODEX_SESSIONS_DIR);
     match fs::symlink_metadata(&target) {
         Ok(meta) if meta.file_type().is_symlink() => {
+            // Resolve the real directory the symlink points to BEFORE removing it.
+            let real = fs::read_link(&target).ok().map(|link| {
+                if link.is_absolute() {
+                    link
+                } else {
+                    target.parent().unwrap_or(Path::new("/")).join(link)
+                }
+            });
             remove_path(&target)?;
-            if source.is_dir() {
-                copy_dir_recursive(&source, &target)?;
+            if let Some(real) = real {
+                if real.is_dir() {
+                    copy_dir_recursive(&real, &target)?;
+                }
             }
             Ok(true)
         }
@@ -4555,13 +4563,8 @@ fn apply_codex_sessions_share(change: &LibraryCellChange) -> Result<bool, String
         };
         share_codex_sessions(&source_home, &target_home)
     } else {
-        // Find the source the target is currently linked to (any other column).
-        let source_home = cols
-            .iter()
-            .find(|c| c.id != change.target_install_id)
-            .map(|c| c.home.clone())
-            .unwrap_or_else(|| target_home.clone());
-        make_codex_sessions_independent(&source_home, &target_home)
+        // Resolve the real link target from the symlink itself — no guessing.
+        make_codex_sessions_independent(&target_home)
     }
 }
 
@@ -8156,8 +8159,9 @@ mod tests {
         // Idempotent: second share is a no-op.
         assert!(!share_codex_sessions(src_home.path(), tgt_home.path()).unwrap());
 
-        // Make independent: symlink removed, source content copied back as real.
-        assert!(make_codex_sessions_independent(src_home.path(), tgt_home.path()).unwrap());
+        // Make independent resolves the symlink target itself (no source arg),
+        // so it copies back the EXACT content the target was showing.
+        assert!(make_codex_sessions_independent(tgt_home.path()).unwrap());
         assert!(!tgt_sessions
             .symlink_metadata()
             .unwrap()
@@ -8165,6 +8169,28 @@ mod tests {
             .is_symlink());
         assert!(tgt_sessions.is_dir());
         assert!(tgt_sessions.join("rollout-a.jsonl").exists());
+    }
+
+    #[test]
+    fn make_codex_sessions_independent_copies_the_actual_link_target_not_a_guess() {
+        // 3 accounts: target links to C (not the "first other" B). The undo must
+        // copy back C's content, proving it reads the real symlink target.
+        let b = tempfile::tempdir().unwrap();
+        let c = tempfile::tempdir().unwrap();
+        let tgt = tempfile::tempdir().unwrap();
+        let c_sessions = c.path().join("sessions");
+        fs::create_dir_all(&c_sessions).unwrap();
+        fs::write(c_sessions.join("from-c.jsonl"), "{}").unwrap();
+        let b_sessions = b.path().join("sessions");
+        fs::create_dir_all(&b_sessions).unwrap();
+        fs::write(b_sessions.join("from-b.jsonl"), "{}").unwrap();
+        // target/sessions -> C/sessions
+        std::os::unix::fs::symlink(&c_sessions, tgt.path().join("sessions")).unwrap();
+
+        assert!(make_codex_sessions_independent(tgt.path()).unwrap());
+        let tgt_sessions = tgt.path().join("sessions");
+        assert!(tgt_sessions.join("from-c.jsonl").exists(), "copied C's content");
+        assert!(!tgt_sessions.join("from-b.jsonl").exists(), "did NOT copy B's content");
     }
 
     #[test]

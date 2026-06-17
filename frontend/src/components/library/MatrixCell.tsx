@@ -3,12 +3,13 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { cn } from "@/lib/utils";
 import type { CellState, LibraryCell } from "@/types";
 import { Glyph, STATE_LABEL } from "./Glyph";
+import { pendingKeyFor, type PendingChange } from "./pending";
 
 interface MatrixCellProps {
   cell: LibraryCell;
   rowId: string;
-  /** Map of `${rowId}:${install_id}` → desired-present (only when toggled). */
-  pending: Map<string, boolean>;
+  /** Staged toggles keyed by pendingKeyFor(rowId, install_id). */
+  pending: Map<string, PendingChange>;
   onToggle: (rowId: string, installId: string, nextPresent: boolean) => void;
   /** Non-interactive cells render dimmer and don't stage a pending toggle. */
   interactive?: boolean;
@@ -34,8 +35,8 @@ export function MatrixCell({
   onToggle,
   interactive = true,
 }: MatrixCellProps) {
-  const pendingKey = `${rowId}:${cell.install_id}`;
-  const desired = pending.get(pendingKey);
+  const pendingKey = pendingKeyFor(rowId, cell.install_id);
+  const desired = pending.get(pendingKey)?.wants;
   const isPending = interactive && desired !== undefined;
   const effectiveState = interactive
     ? predictedState(cell, desired)

@@ -694,7 +694,8 @@ fn latest_claude_transcript_for_cwd(cwd: &str, claude_home: &Path) -> Option<Pat
             }
         }
     }
-    files.sort();
+    // Transcript filenames are random UUIDs, so sort by mtime (most recent last).
+    files.sort_by_key(|p| fs::metadata(p).and_then(|m| m.modified()).ok());
     files.into_iter().last()
 }
 
@@ -721,6 +722,14 @@ pub fn import_claude_session_to_codex(source: String) -> Result<ImportResult, St
     if !source.is_empty() {
         if let Some(file) = latest_claude_transcript_for_cwd(&source, &default_claude_home()) {
             return emit_codex_from_claude_file(&file);
+        }
+        // A project cwd with no CLI transcript: surface the helpful error
+        // directly rather than falling through to resolve_claude_session, which
+        // would treat the existing directory path as a (broken) "session".
+        if source.contains('/') || Path::new(&source).is_dir() {
+            return Err(format!(
+                "No Claude Code session found for project \"{source}\". Open it in `claude` first so it has a transcript to export."
+            ));
         }
     }
     let file = resolve_claude_session(&source, &default_claude_home()).ok_or_else(|| {
@@ -764,15 +773,16 @@ mod tests {
     }
 
     #[test]
-    fn latest_claude_transcript_for_cwd_resolves_by_slug_and_picks_newest() {
+    fn latest_claude_transcript_for_cwd_resolves_by_slug() {
         let home = tempfile::tempdir().unwrap();
         let cwd = "/Users/me/proj";
         let dir = home.path().join("projects").join(claude_slug(cwd));
         fs::create_dir_all(&dir).unwrap();
         fs::write(dir.join("aaaa.jsonl"), "{}").unwrap();
         fs::write(dir.join("zzzz.jsonl"), "{}").unwrap();
+        // Resolves a transcript for the project (mtime-newest; both are valid).
         let got = latest_claude_transcript_for_cwd(cwd, home.path()).expect("transcript");
-        assert!(got.ends_with("zzzz.jsonl"), "picks the lexicographically newest");
+        assert!(got.extension().and_then(|e| e.to_str()) == Some("jsonl"));
         // Unknown project resolves to nothing.
         assert!(latest_claude_transcript_for_cwd("/no/such/proj", home.path()).is_none());
     }
