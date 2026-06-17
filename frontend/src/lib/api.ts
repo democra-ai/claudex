@@ -286,6 +286,15 @@ export const api = {
   deleteContentPath(path: string): Promise<void> {
     return invoke("delete_content_path", { path });
   },
+  readMcpServer(configPath: string, server: string): Promise<string> {
+    return invoke("read_mcp_server", { configPath, server });
+  },
+  writeMcpServer(configPath: string, server: string, body: string): Promise<void> {
+    return invoke("write_mcp_server", { configPath, server, body });
+  },
+  deleteMcpServer(configPath: string, server: string): Promise<void> {
+    return invoke("delete_mcp_server", { configPath, server });
+  },
   getSessionTranscript(
     installId: string,
     sessionId: string,

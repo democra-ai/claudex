@@ -425,6 +425,86 @@ pub fn delete_content_path(path: String) -> Result<(), String> {
     remove_path(&p)
 }
 
+fn expand_tilde(p: &str) -> PathBuf {
+    if let Some(rest) = p.strip_prefix("~/") {
+        if let Ok(h) = home_dir() {
+            return h.join(rest);
+        }
+    }
+    PathBuf::from(p)
+}
+
+/// Read one MCP server's config (pretty JSON) from a config file (JSON
+/// mcpServers.<name> or TOML [mcp_servers.<name>]), detected by extension.
+pub fn read_mcp_server(config_path: String, server: String) -> Result<String, String> {
+    let path = expand_tilde(&config_path);
+    let is_toml = path.extension().and_then(|e| e.to_str()) == Some("toml");
+    let v = if is_toml {
+        read_codex_mcp_at(&path).get(&server).cloned()
+    } else {
+        let raw = fs::read_to_string(&path).unwrap_or_default();
+        serde_json::from_str::<serde_json::Value>(&raw)
+            .ok()
+            .and_then(|root| root.get("mcpServers").and_then(|m| m.get(&server)).cloned())
+    };
+    let v = v.ok_or_else(|| format!("MCP server \"{server}\" not found."))?;
+    serde_json::to_string_pretty(&v).map_err(|e| format!("Serialize: {e}"))
+}
+
+/// Write one MCP server (keyed splice — never rewrites the rest of the file).
+pub fn write_mcp_server(config_path: String, server: String, body: String) -> Result<(), String> {
+    let path = expand_tilde(&config_path);
+    let home = home_dir()?;
+    if !path.starts_with(&home) {
+        return Err("Refusing to write outside the home directory.".to_string());
+    }
+    let value: serde_json::Value =
+        serde_json::from_str(&body).map_err(|e| format!("Invalid JSON: {e}"))?;
+    let is_toml = path.extension().and_then(|e| e.to_str()) == Some("toml");
+    if is_toml {
+        write_codex_mcp_server_at(&path, &server, &value)
+    } else {
+        let raw = fs::read_to_string(&path).unwrap_or_else(|_| "{}".into());
+        let mut root: serde_json::Value =
+            serde_json::from_str(&raw).map_err(|e| format!("Parse {}: {e}", path.display()))?;
+        let obj = root
+            .as_object_mut()
+            .ok_or_else(|| "Config is not a JSON object.".to_string())?;
+        let servers = obj
+            .entry("mcpServers")
+            .or_insert_with(|| serde_json::Value::Object(Default::default()));
+        servers
+            .as_object_mut()
+            .ok_or_else(|| "mcpServers is not an object.".to_string())?
+            .insert(server, value);
+        write_json_atomically(&path, &root)
+    }
+}
+
+/// Delete one MCP server (keyed).
+pub fn delete_mcp_server(config_path: String, server: String) -> Result<(), String> {
+    let path = expand_tilde(&config_path);
+    let is_toml = path.extension().and_then(|e| e.to_str()) == Some("toml");
+    if is_toml {
+        remove_codex_mcp_server_at(&path, &server).map(|_| ())
+    } else {
+        let raw = match fs::read_to_string(&path) {
+            Ok(r) => r,
+            Err(_) => return Ok(()),
+        };
+        let mut root: serde_json::Value =
+            serde_json::from_str(&raw).map_err(|e| format!("Parse {}: {e}", path.display()))?;
+        if let Some(servers) = root
+            .as_object_mut()
+            .and_then(|o| o.get_mut("mcpServers"))
+            .and_then(|m| m.as_object_mut())
+        {
+            servers.remove(&server);
+        }
+        write_json_atomically(&path, &root)
+    }
+}
+
 /// The home dir backing a session column id, for the given world.
 fn session_home_for(install_id: &str, world: &str) -> Result<PathBuf, String> {
     if world == "codex" {
@@ -7547,6 +7627,25 @@ mod commands {
     }
 
     #[tauri::command]
+    pub fn read_mcp_server(config_path: String, server: String) -> Result<String, String> {
+        super::read_mcp_server(config_path, server)
+    }
+
+    #[tauri::command]
+    pub fn write_mcp_server(
+        config_path: String,
+        server: String,
+        body: String,
+    ) -> Result<(), String> {
+        super::write_mcp_server(config_path, server, body)
+    }
+
+    #[tauri::command]
+    pub fn delete_mcp_server(config_path: String, server: String) -> Result<(), String> {
+        super::delete_mcp_server(config_path, server)
+    }
+
+    #[tauri::command]
     pub fn get_session_transcript(
         install_id: String,
         session_id: String,
@@ -7693,6 +7792,9 @@ pub fn run() {
             commands::read_text_file,
             commands::write_text_file,
             commands::delete_content_path,
+            commands::read_mcp_server,
+            commands::write_mcp_server,
+            commands::delete_mcp_server,
             commands::get_session_transcript,
             commands::delete_session_file,
             commands::list_mcp_cross_library,

@@ -298,18 +298,30 @@ function SessionList({
   );
 }
 
-/** Resolve the editable file behind a matrix cell, or null if this kind isn't
- *  file-editable from the panel (sessions / MCP keyed-edit are handled elsewhere). */
+type ContentTarget =
+  | { mode: "file"; path: string; label: string }
+  | { mode: "mcp"; configPath: string; server: string; label: string };
+
+/** Resolve the editable content behind a matrix cell, or null if not editable. */
 function contentTargetFor(
   kind: LibraryKind,
   cell: LibraryCell,
   rowId: string,
-): { path: string; label: string } | null {
+): ContentTarget | null {
   if (kind === "memory" || kind === "codex_memory" || kind === "memory_cross") {
-    return { path: cell.data_dir, label: cell.kind === "codex" ? "AGENTS.md" : "CLAUDE.md" };
+    return { mode: "file", path: cell.data_dir, label: cell.kind === "codex" ? "AGENTS.md" : "CLAUDE.md" };
   }
   if (kind === "skills" || kind === "codex_skills" || kind === "claude_skills") {
-    return { path: `${cell.data_dir}/${rowId}/SKILL.md`, label: "SKILL.md" };
+    return { mode: "file", path: `${cell.data_dir}/${rowId}/SKILL.md`, label: "SKILL.md" };
+  }
+  if (kind === "mcp_servers" || kind === "codex_mcp" || kind === "mcp_cross") {
+    // Desktop MCP lives in claude_desktop_config.json under the data dir; the
+    // other MCP kinds carry the config file directly in data_dir.
+    const configPath =
+      kind === "mcp_servers"
+        ? `${cell.data_dir}/claude_desktop_config.json`
+        : cell.data_dir;
+    return { mode: "mcp", configPath, server: rowId, label: `MCP · ${rowId}` };
   }
   return null;
 }
@@ -317,15 +329,13 @@ function contentTargetFor(
 /** View + edit + delete the file behind a cell. Replaces the cell list while open. */
 function ContentPanel({
   installName,
-  path,
-  label,
+  target,
   isLink,
   onBack,
   onChanged,
 }: {
   installName: string;
-  path: string;
-  label: string;
+  target: ContentTarget;
   isLink: boolean;
   onBack: () => void;
   onChanged: () => void;
@@ -335,11 +345,16 @@ function ContentPanel({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const isMcp = target.mode === "mcp";
+
+  const read = () =>
+    target.mode === "mcp"
+      ? api.readMcpServer(target.configPath, target.server)
+      : api.readTextFile(target.path);
 
   useEffect(() => {
     let alive = true;
-    api
-      .readTextFile(path)
+    read()
       .then((c) => {
         if (alive) {
           setContent(c);
@@ -350,7 +365,8 @@ function ContentPanel({
     return () => {
       alive = false;
     };
-  }, [path]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [target.mode, target.mode === "mcp" ? target.configPath : target.path]);
 
   const dirty = content !== null && draft !== content;
   const empty = content === "";
@@ -359,7 +375,11 @@ function ContentPanel({
     setBusy(true);
     setError(null);
     try {
-      await api.writeTextFile(path, draft);
+      if (target.mode === "mcp") {
+        await api.writeMcpServer(target.configPath, target.server, draft);
+      } else {
+        await api.writeTextFile(target.path, draft);
+      }
       setContent(draft);
       onChanged();
     } catch (e) {
@@ -372,7 +392,11 @@ function ContentPanel({
     setBusy(true);
     setError(null);
     try {
-      await api.deleteContentPath(path);
+      if (target.mode === "mcp") {
+        await api.deleteMcpServer(target.configPath, target.server);
+      } else {
+        await api.deleteContentPath(target.path);
+      }
       onChanged();
       onBack();
     } catch (e) {
@@ -392,10 +416,10 @@ function ContentPanel({
           ← back
         </button>
         <span className="truncate font-mono text-[10px] text-muted-foreground/70">
-          {installName} · {label}
+          {installName} · {target.label}
         </span>
       </div>
-      {isLink ? (
+      {!isMcp && isLink ? (
         <div className="mb-2 rounded bg-state-shared/8 px-2 py-1 font-sans text-[10px] text-state-shared">
           Shared (symlink) — un-share to edit independently. Saving is blocked.
         </div>
@@ -448,7 +472,7 @@ function ContentPanel({
         )}
         <button
           type="button"
-          disabled={busy || !dirty || isLink}
+          disabled={busy || !dirty || (!isMcp && isLink)}
           onClick={save}
           className="inline-flex items-center gap-1 rounded bg-primary px-2.5 py-1 font-sans text-[11px] text-primary-foreground disabled:opacity-40"
         >
@@ -520,8 +544,7 @@ function RowDetail({
         {openCell && openTarget ? (
           <ContentPanel
             installName={resolveInstallName(openCell.install_id) ?? openCell.install_name}
-            path={openTarget.path}
-            label={openTarget.label}
+            target={openTarget}
             isLink={openCell.state === "shared"}
             onBack={() => setOpenCell(null)}
             onChanged={() => onContentChanged?.()}
