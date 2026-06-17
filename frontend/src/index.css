@@ -32,7 +32,7 @@
 
     /* Cell-state palette. "shared" is the ONE universal green (live link),
      *  independent of the per-tab accent; everything else stays warm-neutral. */
-    --state-shared: 152 60% 38%;    /* green — live shared link */
+    --state-shared: 150 64% 46%;    /* fresh green — live shared link */
     --state-copied: 48 7% 28%;      /* deep warm — neutral filled */
     --state-diverged: 28 70% 48%;   /* warm amber */
     --state-independent: 45 5% 55%; /* mid warm grey */
@@ -62,7 +62,7 @@
     --destructive-foreground: 50 14% 96%;
     --ring: 16 58% 60%;
 
-    --state-shared: 152 55% 50%;
+    --state-shared: 150 60% 56%;
     --state-copied: 50 14% 80%;
     --state-diverged: 28 70% 60%;
     --state-independent: 45 5% 58%;

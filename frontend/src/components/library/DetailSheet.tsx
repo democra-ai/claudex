@@ -155,7 +155,8 @@ function SessionList({
           type="button"
           disabled={transferBusy}
           onClick={() => onExportClaudeSession(rowId, "")}
-          className="mt-1 inline-flex items-center gap-1 rounded bg-foreground/10 px-1.5 py-0.5 font-sans text-[10px] text-foreground/80 transition-colors hover:bg-foreground/20 disabled:opacity-50"
+          /* Destination-coloured: Codex indigo. */
+          className="mt-1 inline-flex items-center gap-1 rounded bg-[#4366F2]/12 px-1.5 py-0.5 font-sans text-[10px] text-[#4366F2] transition-colors hover:bg-[#4366F2]/22 disabled:opacity-50"
         >
           <ArrowLeftRight className="h-3 w-3" />
           Export newest → Codex
@@ -182,7 +183,8 @@ function SessionList({
               type="button"
               disabled={transferBusy}
               onClick={() => onImportCodexSession(s.session_id)}
-              className="mt-1.5 inline-flex items-center gap-1 rounded bg-primary/10 px-1.5 py-0.5 font-sans text-[10px] text-primary transition-colors hover:bg-primary/20 disabled:opacity-50"
+              /* Destination-coloured: Claude copper. */
+              className="mt-1.5 inline-flex items-center gap-1 rounded bg-[#c96442]/12 px-1.5 py-0.5 font-sans text-[10px] text-[#c96442] transition-colors hover:bg-[#c96442]/22 disabled:opacity-50"
             >
               <ArrowLeftRight className="h-3 w-3" />
               Import to Claude
