@@ -1,3 +1,4 @@
+import type { CSSProperties } from "react";
 import { cn } from "@/lib/utils";
 import type { CellState } from "@/types";
 
@@ -40,15 +41,32 @@ interface GlyphProps {
   state: CellState;
   size?: "sm" | "md" | "lg";
   className?: string;
+  /** Per-profile identity colour vars (--profile-h/s/l). Tints the
+   *  "independent" glyph so each account is recognisable; ignored for shared
+   *  (green glow), copied/diverged (copy-mode colours), and absent (muted). */
+  profileVars?: CSSProperties;
 }
 
-export function Glyph({ state, size = "md", className }: GlyphProps) {
+export function Glyph({ state, size = "md", className, profileVars }: GlyphProps) {
+  // "shared" is the universal green glowing dot, regardless of profile colour.
+  if (state === "shared") {
+    return (
+      <span
+        aria-label={STATE_LABEL.shared}
+        className={cn("dot-shared align-middle", className)}
+      />
+    );
+  }
+  // "independent" carries the column's identity colour; copy-mode + absent keep
+  // their state colours.
+  const useProfile = state === "independent";
   return (
     <span
       aria-label={STATE_LABEL[state]}
+      style={useProfile ? profileVars : undefined}
       className={cn(
         "font-mono tabular-nums leading-none select-none glyph-swap",
-        STATE_COLOR[state],
+        useProfile ? "profile-ident" : STATE_COLOR[state],
         size === "sm" && "text-[14px]",
         size === "md" && "text-[18px]",
         size === "lg" && "text-[22px]",

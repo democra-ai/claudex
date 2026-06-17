@@ -30,8 +30,9 @@
     --ring: 16 56% 53%;
     --radius: 0.5rem;
 
-    /* Cell-state palette — anchored to copper, with editorial restraint. */
-    --state-shared: 16 56% 53%;     /* copper — live link */
+    /* Cell-state palette. "shared" is the ONE universal green (live link),
+     *  independent of the per-tab accent; everything else stays warm-neutral. */
+    --state-shared: 152 60% 38%;    /* green — live shared link */
     --state-copied: 48 7% 28%;      /* deep warm — neutral filled */
     --state-diverged: 28 70% 48%;   /* warm amber */
     --state-independent: 45 5% 55%; /* mid warm grey */
@@ -61,11 +62,39 @@
     --destructive-foreground: 50 14% 96%;
     --ring: 16 58% 60%;
 
-    --state-shared: 16 58% 60%;
+    --state-shared: 152 55% 50%;
     --state-copied: 50 14% 80%;
     --state-diverged: 28 70% 60%;
     --state-independent: 45 5% 58%;
     --state-absent: 60 3% 30%;
+  }
+
+  /* Per-tab accent. Claude carries NO data-theme → the copper :root wins, so
+   *  toggling back is a no-op. Codex retints to its indigo mark, Share to green.
+   *  Only the accent vars move; everything else stays Claude-paper. */
+  [data-theme="codex"] {
+    --primary: 228 88% 61%;
+    --accent: 228 88% 61%;
+    --ring: 228 88% 61%;
+    --primary-foreground: 0 0% 100%;
+    --accent-foreground: 0 0% 100%;
+  }
+  .dark [data-theme="codex"] {
+    --primary: 228 88% 70%;
+    --accent: 228 88% 70%;
+    --ring: 228 88% 70%;
+  }
+  [data-theme="share"] {
+    --primary: 152 55% 38%;
+    --accent: 152 55% 38%;
+    --ring: 152 55% 38%;
+    --primary-foreground: 0 0% 100%;
+    --accent-foreground: 0 0% 100%;
+  }
+  .dark [data-theme="share"] {
+    --primary: 152 50% 50%;
+    --accent: 152 50% 50%;
+    --ring: 152 50% 50%;
   }
 }
 
@@ -167,6 +196,33 @@
   }
   .bg-state-shared\/8 {
     background-color: hsl(var(--state-shared) / 0.08);
+  }
+
+  /* Per-profile identity colour — driven by --profile-h/s/l set inline per
+   *  column (see profileColor.ts). Used for a column's independent/present
+   *  cells + its sidebar swatch, so every account has a recognisable hue. */
+  .profile-ident {
+    color: hsl(var(--profile-h, 0) var(--profile-s, 0%) var(--profile-l, 50%));
+  }
+  .profile-bg {
+    background-color: hsl(var(--profile-h, 0) var(--profile-s, 0%) var(--profile-l, 50%));
+  }
+  /* The universal "shared" marker: a green glowing dot. Its glow distinguishes
+   *  the shared-green from the Share-tab accent-green (which is flat). */
+  .dot-shared {
+    display: inline-block;
+    width: 9px;
+    height: 9px;
+    border-radius: 9999px;
+    background: hsl(var(--state-shared));
+    box-shadow:
+      0 0 0 2px hsl(var(--state-shared) / 0.18),
+      0 0 7px 1px hsl(var(--state-shared) / 0.55);
+  }
+  .dark .dot-shared {
+    box-shadow:
+      0 0 0 2px hsl(var(--state-shared) / 0.25),
+      0 0 9px 2px hsl(var(--state-shared) / 0.7);
   }
 
   /* Page-load reveal — gentle, editorial-paced. */

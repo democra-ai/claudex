@@ -5,6 +5,7 @@ import { cn } from "@/lib/utils";
 import type { DesktopInstall, LibraryRow } from "@/types";
 import { MatrixCell } from "./MatrixCell";
 import type { PendingChange } from "./pending";
+import { profileColorVars } from "@/lib/profileColor";
 import { Glyph, STATE_GLYPH } from "./Glyph";
 
 interface MatrixProps {
@@ -122,8 +123,17 @@ export function Matrix({
                   : `${p.name}\n${summary.present} present · ${summary.shared} shared · ${summary.copied} copied`
               }
             >
-              <span className="truncate font-sans text-[12px] font-medium text-foreground/90">
-                {p.kind === "default" ? "Default" : p.name}
+              <span className="flex max-w-full items-center gap-1">
+                {!isCodex ? (
+                  <span
+                    className="profile-bg h-2 w-2 shrink-0 rounded-full"
+                    style={profileColorVars(p.id)}
+                    aria-hidden
+                  />
+                ) : null}
+                <span className="truncate font-sans text-[12px] font-medium text-foreground/90">
+                  {p.kind === "default" ? "Default" : p.name}
+                </span>
               </span>
               {isCodex ? (
                 <span className="font-mono text-[8px] text-muted-foreground/60">global</span>

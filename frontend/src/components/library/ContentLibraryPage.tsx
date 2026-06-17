@@ -962,7 +962,10 @@ export default function ContentLibraryPage() {
     selection?.type === "profile" ? selection.install.id : null;
 
   return (
-    <div className="flex min-h-0 flex-1">
+    <div
+      className="flex min-h-0 flex-1"
+      data-theme={activeTab === "claude" ? undefined : activeTab}
+    >
       {/* Left rail — 3 tool tabs at the very top, then the active tab's body */}
       <aside className="flex w-60 flex-col gap-3 border-r bg-card/30 py-4">
         <div className="px-3">

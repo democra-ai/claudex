@@ -4,6 +4,7 @@ import { cn } from "@/lib/utils";
 import type { CellState, LibraryCell } from "@/types";
 import { Glyph, STATE_LABEL } from "./Glyph";
 import { pendingKeyFor, type PendingChange } from "./pending";
+import { profileColorVars } from "@/lib/profileColor";
 
 interface MatrixCellProps {
   cell: LibraryCell;
@@ -73,7 +74,10 @@ export function MatrixCell({
           aria-label={tooltip}
           type="button"
         >
-          <Glyph state={effectiveState} />
+          <Glyph
+            state={effectiveState}
+            profileVars={profileColorVars(cell.install_id)}
+          />
         </button>
       </TooltipTrigger>
       <TooltipContent side="top" className="font-mono text-[11px]">
