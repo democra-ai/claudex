@@ -327,10 +327,29 @@ fn remove_data_dir(path: &Path) -> Result<(), String> {
     if home.starts_with(&canon) {
         return Err("Refusing to delete an ancestor of the home directory.".to_string());
     }
-    // Must live under $HOME, at least 2 components deep (e.g. ~/.codex-x is ok;
-    // ~/x alone is refused as too shallow / risky).
+    // Must live under $HOME. Require >=2 components deep (e.g. ~/Library/.../X)
+    // so a bad 1-deep path like ~/Documents or ~/.ssh can never be erased — EXCEPT
+    // our own managed agent homes ~/.codex-<name> / ~/.claude-<name>, which are
+    // legitimately 1 component deep (allow only those by exact dotdir prefix).
     match canon.strip_prefix(&home) {
-        Ok(rel) if rel.components().count() >= 1 => remove_path(&canon),
+        Ok(rel) => {
+            let comps = rel.components().count();
+            let first = rel
+                .components()
+                .next()
+                .and_then(|c| c.as_os_str().to_str())
+                .unwrap_or("");
+            let allowed_shallow =
+                first.starts_with(".codex-") || first.starts_with(".claude-");
+            if comps >= 2 || (comps == 1 && allowed_shallow) {
+                remove_path(&canon)
+            } else {
+                Err(format!(
+                    "Refusing to delete {} — too shallow under the home directory.",
+                    canon.display()
+                ))
+            }
+        }
         _ => Err(format!(
             "Refusing to delete {} — not safely under the home directory.",
             canon.display()
@@ -2432,7 +2451,13 @@ pub fn delete_desktop_profile(install_id: String, delete_data: bool) -> Result<(
     }
 
     if delete_data {
-        remove_data_dir(Path::new(&install.data_dir))?;
+        // Assert the deterministic path, not the trusted registry string — a
+        // corrupted profiles.json can't redirect the erase elsewhere.
+        let dd = PathBuf::from(&install.data_dir);
+        if dd != default_data_dir_for(&install.name)? {
+            return Err("Profile data dir path mismatch — refusing to delete.".to_string());
+        }
+        remove_data_dir(&dd)?;
     }
 
     // Clear only the Claude halves; keep a Codex half if this entry has one.
@@ -2493,7 +2518,12 @@ pub fn delete_codex_profile(install_id: String, delete_data: bool) -> Result<(),
         remove_path(Path::new(launcher))?;
     }
     if delete_data {
-        remove_data_dir(Path::new(&install.data_dir))?;
+        // Assert the deterministic Chromium data dir, not the registry string.
+        let dd = PathBuf::from(&install.data_dir);
+        if dd != codex_data_dir_for(&install.name)? {
+            return Err("Codex profile data dir path mismatch — refusing to delete.".to_string());
+        }
+        remove_data_dir(&dd)?;
         // Also erase the per-profile CODEX_HOME (auth.json, sessions, config).
         // Use the DETERMINISTIC path (~/.codex-<clean>), never a registry-
         // supplied string. Belt-and-suspenders: also refuse the shared default.
@@ -8411,6 +8441,23 @@ mod tests {
         );
         // A non-existent path is a no-op (idempotent), not an error.
         assert!(remove_data_dir(&home.join(".claudex-does-not-exist-xyz")).is_ok());
+
+        // A REAL 1-component dir under HOME that is NOT one of our managed agent
+        // homes must be refused (guards ~/Documents, ~/.ssh, …). Create+refuse+
+        // verify-still-there, then clean up.
+        let shallow = home.join(".claudex-test-shallow-refuse-me");
+        fs::create_dir_all(&shallow).unwrap();
+        let res = remove_data_dir(&shallow);
+        let still = shallow.exists();
+        let _ = fs::remove_dir_all(&shallow); // cleanup regardless
+        assert!(res.is_err(), "1-deep non-managed dir must be refused");
+        assert!(still, "refused dir must NOT have been deleted");
+
+        // But a managed ~/.codex-<name> (1-deep, allowlisted) IS removable.
+        let managed = home.join(".codex-claudex-test-allow-me");
+        fs::create_dir_all(&managed).unwrap();
+        assert!(remove_data_dir(&managed).is_ok());
+        assert!(!managed.exists(), "managed dotdir should be removed");
     }
 
     #[test]

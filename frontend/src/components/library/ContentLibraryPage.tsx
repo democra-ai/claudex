@@ -745,6 +745,13 @@ export default function ContentLibraryPage() {
           "cowork_skills",
           "skills",
           "preferences",
+          "codex_sessions",
+          "codex_skills",
+          "codex_mcp",
+          "codex_memory",
+          "mcp_cross",
+          "memory",
+          "memory_cross",
         ] as LibraryKind[]
       ).filter((k) => k !== activeKind);
       for (const k of others) {
