@@ -239,6 +239,8 @@ export const api = {
         ? "list_codex_mcp_library"
         : kind === "mcp_cross"
         ? "list_mcp_cross_library"
+        : kind === "memory"
+        ? "list_memory_library"
         : "list_library_preferences";
     return invoke(command);
   },

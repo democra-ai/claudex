@@ -5022,6 +5022,168 @@ fn apply_mcp_cross_share(change: &LibraryCellChange) -> Result<bool, String> {
     }
 }
 
+// ===========================================================================
+// Memory (Share tab) — the agent's memory/instruction Markdown file. Claude Code
+// reads <config_dir>/CLAUDE.md, Codex reads <CODEX_HOME>/AGENTS.md. It's just
+// Markdown, so it symlink-shares exactly like a skill — within Claude accounts,
+// within Codex accounts, AND across the two. The filename differs per tool, but
+// a symlink's BASENAME is fixed by its location (CLAUDE.md or AGENTS.md) while
+// its TARGET is the source file, so CLAUDE.md <-> AGENTS.md bridges cleanly. One
+// matrix, every account a column. Column ids are namespaced ("claude-code:<id>"
+// / "codex:<id>") because Claude-code and Codex both use "default"/"profile:*".
+// ===========================================================================
+
+const MEMORY_CLAUDE_FILE: &str = "CLAUDE.md";
+const MEMORY_CODEX_FILE: &str = "AGENTS.md";
+const MEMORY_CLAUDE_PREFIX: &str = "claude-code:";
+const MEMORY_CODEX_PREFIX: &str = "codex:";
+
+struct MemoryCol {
+    id: String,
+    label: String,
+    kind: String,
+    path: PathBuf,
+}
+
+fn memory_columns() -> Result<Vec<MemoryCol>, String> {
+    let mut cols = Vec::new();
+    for inst in list_code_installs()? {
+        let label = if inst.kind == "default" {
+            "Default ~/.claude".to_string()
+        } else {
+            inst.name.clone()
+        };
+        cols.push(MemoryCol {
+            id: format!("{MEMORY_CLAUDE_PREFIX}{}", inst.id),
+            label,
+            kind: "claude".to_string(),
+            path: PathBuf::from(inst.config_dir).join(MEMORY_CLAUDE_FILE),
+        });
+    }
+    for c in codex_profile_columns()? {
+        cols.push(MemoryCol {
+            id: format!("{MEMORY_CODEX_PREFIX}{}", c.id),
+            label: format!("Codex {}", c.label),
+            kind: "codex".to_string(),
+            path: c.home.join(MEMORY_CODEX_FILE),
+        });
+    }
+    Ok(cols)
+}
+
+fn memory_path_for_column(id: &str) -> Result<Option<PathBuf>, String> {
+    Ok(memory_columns()?.into_iter().find(|c| c.id == id).map(|c| c.path))
+}
+
+/// A path is a "real" memory file (regular file, not a symlink).
+fn is_real_file(p: &Path) -> bool {
+    fs::symlink_metadata(p).map(|m| m.is_file()).unwrap_or(false)
+}
+
+/// A path is present as a memory file (real file OR a symlink to one).
+fn memory_present(p: &Path) -> bool {
+    is_real_file(p)
+        || fs::symlink_metadata(p)
+            .map(|m| m.file_type().is_symlink())
+            .unwrap_or(false)
+}
+
+/// The Memory matrix: a single row, one column per account (Claude code dirs +
+/// Codex homes). Symlink-share, bidirectional state via codex_skill_share_states.
+pub fn list_memory_library() -> Result<Vec<LibraryRow>, String> {
+    let cols = memory_columns()?;
+    let paths: Vec<PathBuf> = cols.iter().map(|c| c.path.clone()).collect();
+    let present: Vec<bool> = paths.iter().map(|p| memory_present(p)).collect();
+    let states = codex_skill_share_states(&paths, &present);
+    let cells = cols
+        .iter()
+        .enumerate()
+        .map(|(i, c)| LibraryCell {
+            install_id: c.id.clone(),
+            install_name: c.label.clone(),
+            data_dir: c.path.to_string_lossy().to_string(),
+            kind: c.kind.clone(),
+            state: states[i].to_string(),
+            present: present[i],
+            detail: if present[i] {
+                Some(if c.kind == "codex" {
+                    MEMORY_CODEX_FILE.to_string()
+                } else {
+                    MEMORY_CLAUDE_FILE.to_string()
+                })
+            } else {
+                None
+            },
+            digest: None,
+            link_target_digest: symlink_target_digest(&paths[i]),
+        })
+        .collect();
+    Ok(vec![LibraryRow {
+        id: "memory".to_string(),
+        label: "Agent memory".to_string(),
+        description: Some("CLAUDE.md ↔ AGENTS.md".to_string()),
+        cells,
+        interactive: true,
+        group: None,
+    }])
+}
+
+/// Share the memory file: symlink the target account's memory file at the
+/// source's. The target link keeps its own basename (CLAUDE.md / AGENTS.md) and
+/// points at the source file, so cross-tool sharing bridges the filename gap.
+/// Non-destructive: refuses to clobber a real file / foreign symlink.
+fn apply_memory_share(change: &LibraryCellChange) -> Result<bool, String> {
+    let target_link = memory_path_for_column(&change.target_install_id)?
+        .ok_or_else(|| format!("Unknown memory column: {}", change.target_install_id))?;
+
+    if change.wants {
+        let source_path = if let Some(src) = &change.source_install_id {
+            memory_path_for_column(src)?.ok_or_else(|| format!("Unknown source: {src}"))?
+        } else {
+            let cols = memory_columns()?;
+            // Prefer a real-file source over a symlink (avoids symlink chains).
+            cols.iter()
+                .find(|c| c.id != change.target_install_id && is_real_file(&c.path))
+                .or_else(|| {
+                    cols.iter()
+                        .find(|c| c.id != change.target_install_id && memory_present(&c.path))
+                })
+                .ok_or_else(|| "No account holds a memory file to share from.".to_string())?
+                .path
+                .clone()
+        };
+        if !memory_present(&source_path) {
+            return Err("Source memory file doesn't exist.".to_string());
+        }
+        if path_points_to(&target_link, &source_path) {
+            return Ok(false);
+        }
+        if fs::symlink_metadata(&target_link).is_ok() {
+            return Err(format!(
+                "A memory file already exists at the target ({}) and isn't a Claudex link — remove it there first.",
+                target_link.display()
+            ));
+        }
+        if let Some(parent) = target_link.parent() {
+            fs::create_dir_all(parent).map_err(|e| format!("Create {}: {e}", parent.display()))?;
+        }
+        symlink_path(&source_path, &target_link)?;
+        Ok(true)
+    } else {
+        match fs::symlink_metadata(&target_link) {
+            Ok(meta) if meta.file_type().is_symlink() => {
+                remove_path(&target_link)?;
+                Ok(true)
+            }
+            Ok(_) => Err(
+                "The target memory file is real, not a Claudex link — leaving it untouched."
+                    .to_string(),
+            ),
+            Err(_) => Ok(false),
+        }
+    }
+}
+
 pub fn apply_library_change(
     kind: String,
     change: LibraryCellChange,
@@ -5037,6 +5199,9 @@ pub fn apply_library_change(
     }
     if kind == "codex_mcp" {
         return apply_codex_mcp_share(&change);
+    }
+    if kind == "memory" {
+        return apply_memory_share(&change);
     }
     let installs = list_desktop_installs()?;
     let target = installs
@@ -6340,6 +6505,11 @@ mod commands {
     }
 
     #[tauri::command]
+    pub fn list_memory_library() -> Result<Vec<LibraryRow>, String> {
+        super::list_memory_library()
+    }
+
+    #[tauri::command]
     pub fn list_library_preferences() -> Result<Vec<LibraryRow>, String> {
         super::list_preferences_library()
     }
@@ -6441,6 +6611,7 @@ pub fn run() {
             commands::list_codex_skills_library,
             commands::list_codex_mcp_library,
             commands::list_mcp_cross_library,
+            commands::list_memory_library,
             commands::list_library_preferences,
             commands::apply_library_changes,
             commands::list_library_code_history,
@@ -7720,6 +7891,31 @@ mod tests {
         let lone = vec![a_skill, c.path().join("y")];
         let states2 = codex_skill_share_states(&lone, &[true, false]);
         assert_eq!(states2[0], "independent");
+    }
+
+    #[test]
+    fn memory_cross_filename_symlink_reads_shared_on_both() {
+        // Cross-platform memory: AGENTS.md (Codex) symlinked to CLAUDE.md (Claude).
+        // The filename differs but the share-state detection must still see both
+        // as shared (single-file analog of the skill symlink topology).
+        let claude = tempfile::tempdir().unwrap();
+        let codex = tempfile::tempdir().unwrap();
+        let claude_md = claude.path().join("CLAUDE.md");
+        fs::write(&claude_md, "# memory\nremember things\n").unwrap();
+        let agents_md = codex.path().join("AGENTS.md");
+        std::os::unix::fs::symlink(&claude_md, &agents_md).unwrap();
+
+        let paths = vec![claude_md.clone(), agents_md.clone()];
+        let present = vec![memory_present(&claude_md), memory_present(&agents_md)];
+        assert_eq!(present, vec![true, true], "both memory files present");
+        let states = codex_skill_share_states(&paths, &present);
+        assert_eq!(states[0], "shared", "CLAUDE.md source reads shared");
+        assert_eq!(states[1], "shared", "AGENTS.md symlink reads shared");
+        // A lone CLAUDE.md with no partner is independent.
+        assert_eq!(
+            codex_skill_share_states(&[claude_md], &[true])[0],
+            "independent"
+        );
     }
 
     #[test]

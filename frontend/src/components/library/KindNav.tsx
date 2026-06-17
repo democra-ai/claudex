@@ -1,4 +1,4 @@
-import { Blocks, Boxes, Hammer, MessagesSquare, Sparkles, Settings2, Wrench } from "lucide-react";
+import { Blocks, Boxes, Hammer, MessagesSquare, NotebookText, Sparkles, Settings2, Wrench } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { LibraryKind, LibraryRow } from "@/types";
 
@@ -55,6 +55,13 @@ const KINDS: KindDef[] = [
     label: "MCP servers",
     icon: Boxes,
     blurb: "JSON ↔ TOML, copy",
+    crossTool: true,
+  },
+  {
+    value: "memory",
+    label: "Memory",
+    icon: NotebookText,
+    blurb: "CLAUDE.md ↔ AGENTS.md",
     crossTool: true,
   },
   {
