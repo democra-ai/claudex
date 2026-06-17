@@ -771,7 +771,7 @@ export default function ContentLibraryPage() {
             <>
               <div className="mx-2">
                 <SidebarRegion
-                  label="Claude"
+                  label="Profiles"
                   accent="claude"
                   caption="Desktop + Code. Shares among Claude profiles."
                   count={`${visibleIds.size}/${installs.length}`}
@@ -825,7 +825,7 @@ export default function ContentLibraryPage() {
           {activeTab === "codex" ? (
             <div className="mx-2">
               <SidebarRegion
-                label="Codex"
+                label="Profiles"
                 accent="codex"
                 caption="Launch & login. Skills shared via the Share tab."
                 count={`${codexInstalls.length}`}

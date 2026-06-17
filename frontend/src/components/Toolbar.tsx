@@ -37,7 +37,7 @@ export function Toolbar({ onRefresh, busy }: ToolbarProps) {
   return (
     <header
       data-tauri-drag-region
-      className="flex h-[45px] items-center justify-between border-b bg-background pl-[80px] pr-4"
+      className="flex h-[45px] items-center justify-between border-b border-border/50 bg-transparent pl-[80px] pr-4"
     >
       <div data-tauri-drag-region className="flex items-center gap-2">
         {/* The Claude×Codex split mark. Kept at 16px with a rounded mask so it

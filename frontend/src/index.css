@@ -79,7 +79,17 @@
     @apply h-full;
   }
   body {
-    @apply bg-background text-foreground antialiased;
+    @apply text-foreground antialiased;
+    /* The app canvas echoes the icon: a soft diagonal wash from warm cream
+     *  (bottom-left) to cool blue (top-right). Panels sit semi-transparent
+     *  over it so the gradient reads through the whole window. */
+    background: linear-gradient(
+      to top right,
+      #f6ecd7 0%,
+      #ece8e2 48%,
+      #cfdbf0 100%
+    );
+    background-attachment: fixed;
     font-family:
       "Geist", -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
     font-feature-settings:
@@ -87,6 +97,14 @@
       "calt" 1,
       "ss01" 1;
     font-variant-ligatures: contextual;
+  }
+  .dark body {
+    background: linear-gradient(
+      to top right,
+      #2a2622 0%,
+      #262624 48%,
+      #21252e 100%
+    );
   }
   /* Serif display — for titles, profile names, hero numbers. Editorial. */
   .font-display {
