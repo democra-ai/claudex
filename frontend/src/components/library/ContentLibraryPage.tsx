@@ -150,11 +150,14 @@ const EMPTY_HINTS: Record<LibraryKind, string> = {
   codex_sessions: "No Codex sessions in ~/.codex/sessions yet.",
   codex_skills: "No skills in ~/.codex/skills yet.",
   codex_mcp: "No MCP servers in ~/.codex/config.toml.",
+  mcp_cross: "No stdio MCP servers found in Claude Code or Codex.",
 };
 
 /** Per-kind one-liner shown above the matrix explaining the Codex situation. */
 const KIND_SCOPE_CAPTION: Partial<Record<LibraryKind, string>> = {
   skills: "Skills are the one library Claude and Codex share — the Codex column links into ~/.codex/skills.",
+  mcp_cross:
+    "Copy stdio MCP servers between Claude Code (~/.claude.json, JSON) and Codex (~/.codex/config.toml, TOML). Toggle a cell to copy from the other side; collisions with a different config are refused.",
   extensions: "Claude-only — Codex has no extensions equivalent.",
   mcp_servers: "Claude uses JSON, Codex uses TOML — cross-tool MCP would be copy-with-transform, not yet available.",
   cowork_skills: "Claude Cowork only — these are the per-profile Cowork agent skills.",
@@ -178,6 +181,19 @@ const CODEX_GLOBAL_COLUMN: DesktopInstall = {
   name: "Codex",
   kind: "profile",
   data_dir: "~/.codex",
+  app_path: null,
+  launcher_path: null,
+  managed: true,
+  is_running: false,
+};
+
+/** Synthetic column for the Claude Code user-scope MCP config (~/.claude.json),
+ *  used as the Claude side of the cross-tool MCP matrix. */
+const CLAUDE_CODE_MCP_COLUMN: DesktopInstall = {
+  id: "claude:code",
+  name: "Claude Code",
+  kind: "default",
+  data_dir: "~/.claude.json",
   app_path: null,
   launcher_path: null,
   managed: true,
@@ -411,6 +427,8 @@ export default function ContentLibraryPage() {
   const matrixColumns = useMemo<DesktopInstall[]>(() => {
     // Codex-private kinds: one global ~/.codex column.
     if (CODEX_KINDS.includes(activeKind)) return [CODEX_GLOBAL_COLUMN];
+    // Cross-tool MCP: Claude Code + Codex, copy-mode.
+    if (activeKind === "mcp_cross") return [CLAUDE_CODE_MCP_COLUMN, CODEX_GLOBAL_COLUMN];
     if (activeKind !== "skills") return visibleProfiles;
     // Cross-tool Skills: Claude CODE config dirs + one global Codex column.
     const claudeCols: DesktopInstall[] = codeInstalls.map((c) => ({
@@ -441,6 +459,7 @@ export default function ContentLibraryPage() {
       "codex_sessions",
       "codex_skills",
       "codex_mcp",
+      "mcp_cross",
     ] as LibraryKind[]) {
       const rows = rowsByKind[kind];
       out[kind] = rows ? computeKindCount(rows) : null;
@@ -546,6 +565,7 @@ export default function ContentLibraryPage() {
       "codex_sessions",
       "codex_skills",
       "codex_mcp",
+      "mcp_cross",
     ];
     const todo = others.filter((k) => k !== activeKind && !rowsByKind[k]);
     if (todo.length === 0 || !isTauri()) return;
@@ -991,13 +1011,13 @@ export default function ContentLibraryPage() {
                   setSelection((current) => (current?.type === "row" ? null : current));
                 }}
                 counts={counts}
-                only={["skills"]}
+                only={["skills", "mcp_cross"]}
                 heading="Cross-tool sharing"
               />
               <p className="mt-1 flex items-start gap-1.5 px-3 font-sans text-[10px] leading-snug text-muted-foreground/70">
                 <span className="mt-0.5 h-2 w-2 shrink-0 rounded-[2px] bg-foreground" />
-                Skills (SKILL.md) is the one library Claude and Codex share. MCP
-                (JSON↔TOML) is coming later.
+                Skills (SKILL.md) link live between Claude and Codex. MCP servers
+                copy across the JSON↔TOML boundary.
               </p>
             </div>
           ) : null}
@@ -1029,7 +1049,7 @@ export default function ContentLibraryPage() {
 
         {KIND_SCOPE_CAPTION[activeKind] ? (
           <div className="flex items-center gap-2 rounded-md border border-border/60 bg-muted/30 px-3 py-1.5 font-sans text-[11px] text-muted-foreground">
-            {activeKind === "skills" ? (
+            {activeKind === "skills" || activeKind === "mcp_cross" ? (
               <span className="h-2 w-2 shrink-0 rounded-[2px] bg-foreground" />
             ) : activeTab === "codex" ? (
               <CodexMark className="h-3 w-3 shrink-0 text-[#4366F2]" />

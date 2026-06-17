@@ -51,6 +51,13 @@ const KINDS: KindDef[] = [
     crossTool: true,
   },
   {
+    value: "mcp_cross",
+    label: "MCP servers",
+    icon: Boxes,
+    blurb: "JSON ↔ TOML, copy",
+    crossTool: true,
+  },
+  {
     value: "preferences",
     label: "Preferences",
     icon: Settings2,

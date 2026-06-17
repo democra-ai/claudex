@@ -280,7 +280,8 @@ export type LibraryKind =
   | "preferences"
   | "codex_sessions"
   | "codex_skills"
-  | "codex_mcp";
+  | "codex_mcp"
+  | "mcp_cross";
 
 /** Result of importing a session from one tool into the other. */
 export type ImportResult = {

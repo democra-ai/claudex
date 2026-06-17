@@ -4183,12 +4183,446 @@ pub fn list_codex_mcp_library() -> Result<Vec<LibraryRow>, String> {
     Ok(rows)
 }
 
+// ===========================================================================
+// Cross-tool MCP (Share tab) — Claude Code (~/.claude.json `mcpServers`, JSON)
+// <-> Codex (~/.codex/config.toml `[mcp_servers]`, TOML). Copy-mode with a
+// JSON<->TOML transform; only stdio (command-based) servers are cross-tool
+// shareable (remote/SSE Claude servers have no Codex equivalent and are
+// skipped). Non-destructive: a name collision with a *different* config on the
+// target refuses rather than clobbering.
+// ===========================================================================
+
+const MCP_CROSS_CLAUDE_ID: &str = "claude:code";
+
+fn claude_code_config_path() -> Result<PathBuf, String> {
+    // Claude Code keeps user-scope MCP servers in ~/.claude.json under the
+    // top-level `mcpServers` object.
+    Ok(home_dir()?.join(".claude.json"))
+}
+
+/// Atomic string write (temp + rename on the same fs). Sibling of
+/// `write_json_atomically` for non-JSON (TOML) targets.
+fn write_string_atomically(path: &Path, contents: &str) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|e| format!("Create {}: {e}", parent.display()))?;
+    }
+    let file_name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or_else(|| format!("Invalid path: {}", path.display()))?;
+    let tmp = path.with_file_name(format!(".{file_name}.tmp"));
+    fs::write(&tmp, contents).map_err(|e| format!("Write {}: {e}", tmp.display()))?;
+    fs::rename(&tmp, path)
+        .map_err(|e| format!("Rename {} -> {}: {e}", tmp.display(), path.display()))
+}
+
+/// Recursively convert a toml_edit value into serde_json (Codex MCP -> IR).
+fn toml_value_to_json(v: &toml_edit::Value) -> serde_json::Value {
+    use serde_json::Value as J;
+    use toml_edit::Value as T;
+    match v {
+        T::String(s) => J::String(s.value().clone()),
+        T::Integer(i) => J::Number((*i.value()).into()),
+        T::Float(f) => serde_json::Number::from_f64(*f.value())
+            .map(J::Number)
+            .unwrap_or(J::Null),
+        T::Boolean(b) => J::Bool(*b.value()),
+        T::Datetime(d) => J::String(d.value().to_string()),
+        T::Array(a) => J::Array(a.iter().map(toml_value_to_json).collect()),
+        T::InlineTable(t) => {
+            let mut map = serde_json::Map::new();
+            for (k, val) in t.iter() {
+                map.insert(k.to_string(), toml_value_to_json(val));
+            }
+            J::Object(map)
+        }
+    }
+}
+
+fn toml_item_to_json(item: &toml_edit::Item) -> serde_json::Value {
+    use serde_json::Value as J;
+    use toml_edit::Item;
+    match item {
+        Item::Value(v) => toml_value_to_json(v),
+        Item::Table(t) => {
+            let mut map = serde_json::Map::new();
+            for (k, v) in t.iter() {
+                map.insert(k.to_string(), toml_item_to_json(v));
+            }
+            J::Object(map)
+        }
+        Item::ArrayOfTables(arr) => J::Array(
+            arr.iter()
+                .map(|t| {
+                    let mut map = serde_json::Map::new();
+                    for (k, v) in t.iter() {
+                        map.insert(k.to_string(), toml_item_to_json(v));
+                    }
+                    J::Object(map)
+                })
+                .collect(),
+        ),
+        Item::None => J::Null,
+    }
+}
+
+/// Convert a (scalar/array) JSON value into a toml_edit value. Objects are
+/// handled one level up by `json_object_to_toml_table` so they render as
+/// nested `[table]`s (e.g. `env`) rather than inline.
+fn json_to_toml_value(v: &serde_json::Value) -> Option<toml_edit::Value> {
+    use serde_json::Value as J;
+    use toml_edit::Value as T;
+    Some(match v {
+        J::Null => return None,
+        J::Bool(b) => T::from(*b),
+        J::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                T::from(i)
+            } else if let Some(f) = n.as_f64() {
+                T::from(f)
+            } else {
+                return None;
+            }
+        }
+        J::String(s) => T::from(s.clone()),
+        J::Array(a) => {
+            let mut arr = toml_edit::Array::new();
+            for x in a {
+                if let Some(tv) = json_to_toml_value(x) {
+                    arr.push(tv);
+                }
+            }
+            T::Array(arr)
+        }
+        J::Object(o) => {
+            let mut it = toml_edit::InlineTable::new();
+            for (k, val) in o {
+                if let Some(tv) = json_to_toml_value(val) {
+                    it.insert(k, tv);
+                }
+            }
+            T::InlineTable(it)
+        }
+    })
+}
+
+/// Build a real TOML table from a JSON object so nested objects (`env`) become
+/// idiomatic `[mcp_servers.<name>.env]` sub-tables.
+fn json_object_to_toml_table(
+    obj: &serde_json::Map<String, serde_json::Value>,
+) -> toml_edit::Table {
+    use serde_json::Value as J;
+    let mut table = toml_edit::Table::new();
+    for (k, v) in obj {
+        match v {
+            J::Object(inner) => {
+                table.insert(k, toml_edit::Item::Table(json_object_to_toml_table(inner)));
+            }
+            other => {
+                if let Some(tv) = json_to_toml_value(other) {
+                    table.insert(k, toml_edit::Item::Value(tv));
+                }
+            }
+        }
+    }
+    table
+}
+
+/// Order-independent serialization for digesting two MCP configs across the
+/// JSON/TOML boundary (object keys sorted; arrays kept ordered).
+fn canonical_json_string(v: &serde_json::Value) -> String {
+    use serde_json::Value as J;
+    match v {
+        J::Object(o) => {
+            let mut keys: Vec<&String> = o.keys().collect();
+            keys.sort();
+            let inner: Vec<String> = keys
+                .iter()
+                .map(|k| format!("{:?}:{}", k, canonical_json_string(&o[*k])))
+                .collect();
+            format!("{{{}}}", inner.join(","))
+        }
+        J::Array(a) => {
+            let inner: Vec<String> = a.iter().map(canonical_json_string).collect();
+            format!("[{}]", inner.join(","))
+        }
+        other => serde_json::to_string(other).unwrap_or_default(),
+    }
+}
+
+fn mcp_value_digest(v: &serde_json::Value) -> String {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let mut h = DefaultHasher::new();
+    canonical_json_string(v).hash(&mut h);
+    format!("{:016x}", h.finish())
+}
+
+fn mcp_summary(v: &serde_json::Value) -> String {
+    let cmd = v.get("command").and_then(|c| c.as_str()).unwrap_or("");
+    let arg0 = v
+        .get("args")
+        .and_then(|a| a.as_array())
+        .and_then(|a| a.first())
+        .and_then(|x| x.as_str())
+        .unwrap_or("");
+    format!("{cmd} {arg0}").trim().to_string()
+}
+
+/// Read Claude Code's user-scope stdio MCP servers (name -> JSON config).
+fn read_claude_code_mcp() -> BTreeMap<String, serde_json::Value> {
+    let mut out = BTreeMap::new();
+    let path = match claude_code_config_path() {
+        Ok(p) => p,
+        Err(_) => return out,
+    };
+    let raw = match fs::read_to_string(&path) {
+        Ok(r) => r,
+        Err(_) => return out,
+    };
+    let val: serde_json::Value = match serde_json::from_str(&raw) {
+        Ok(v) => v,
+        Err(_) => return out,
+    };
+    if let Some(servers) = val.get("mcpServers").and_then(|v| v.as_object()) {
+        for (name, cfg) in servers {
+            // stdio only — remote (sse/http/url) servers have no Codex analog.
+            if cfg.get("command").and_then(|c| c.as_str()).is_some() {
+                out.insert(name.clone(), cfg.clone());
+            }
+        }
+    }
+    out
+}
+
+/// Read Codex's stdio MCP servers (name -> JSON config, transformed from TOML).
+fn read_codex_mcp() -> BTreeMap<String, serde_json::Value> {
+    let mut out = BTreeMap::new();
+    let path = match codex_config_path() {
+        Ok(p) => p,
+        Err(_) => return out,
+    };
+    let raw = match fs::read_to_string(&path) {
+        Ok(r) => r,
+        Err(_) => return out,
+    };
+    let doc: toml_edit::ImDocument<String> = match raw.parse() {
+        Ok(d) => d,
+        Err(_) => return out,
+    };
+    if let Some(servers) = doc.get("mcp_servers").and_then(|i| i.as_table()) {
+        for (name, item) in servers.iter() {
+            let json = toml_item_to_json(item);
+            if json.get("command").and_then(|c| c.as_str()).is_some() {
+                out.insert(name.to_string(), json);
+            }
+        }
+    }
+    out
+}
+
+fn mcp_cross_cell(
+    install_id: &str,
+    install_name: &str,
+    data_dir: &str,
+    kind: &str,
+    server: Option<&serde_json::Value>,
+) -> LibraryCell {
+    LibraryCell {
+        install_id: install_id.to_string(),
+        install_name: install_name.to_string(),
+        data_dir: data_dir.to_string(),
+        kind: kind.to_string(),
+        state: String::new(),
+        present: server.is_some(),
+        detail: server.map(mcp_summary),
+        digest: server.map(mcp_value_digest),
+        link_target_digest: None,
+    }
+}
+
+/// The cross-tool MCP matrix: one row per server name, two columns
+/// (Claude Code, Codex). Copy semantics — `copied` when both sides hold an
+/// identical config, `diverged` when they differ.
+pub fn list_mcp_cross_library() -> Result<Vec<LibraryRow>, String> {
+    let claude = read_claude_code_mcp();
+    let codex = read_codex_mcp();
+    let mut names: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    names.extend(claude.keys().cloned());
+    names.extend(codex.keys().cloned());
+
+    let mut rows = Vec::new();
+    for name in names {
+        let cells = vec![
+            mcp_cross_cell(
+                MCP_CROSS_CLAUDE_ID,
+                "Claude Code",
+                "~/.claude.json",
+                "default",
+                claude.get(&name),
+            ),
+            mcp_cross_cell(
+                CODEX_SKILLS_GLOBAL_ID,
+                "Codex",
+                "~/.codex/config.toml",
+                "codex",
+                codex.get(&name),
+            ),
+        ];
+        let mut row = LibraryRow {
+            id: name.clone(),
+            label: name,
+            description: None,
+            cells,
+            interactive: true,
+            group: Some("Claude Code + Codex MCP".into()),
+        };
+        compute_row_states(&mut row, false); // copy semantics, no symlinks
+        rows.push(row);
+    }
+    Ok(rows)
+}
+
+fn write_claude_code_mcp_server(name: &str, server: &serde_json::Value) -> Result<(), String> {
+    let path = claude_code_config_path()?;
+    let raw = fs::read_to_string(&path).unwrap_or_else(|_| "{}".to_string());
+    let mut root: serde_json::Value =
+        serde_json::from_str(&raw).map_err(|e| format!("Parse ~/.claude.json: {e}"))?;
+    let obj = root
+        .as_object_mut()
+        .ok_or_else(|| "~/.claude.json is not a JSON object.".to_string())?;
+    let servers = obj
+        .entry("mcpServers")
+        .or_insert_with(|| serde_json::Value::Object(Default::default()));
+    let servers = servers
+        .as_object_mut()
+        .ok_or_else(|| "mcpServers in ~/.claude.json is not an object.".to_string())?;
+    servers.insert(name.to_string(), server.clone());
+    write_json_atomically(&path, &root)
+}
+
+fn remove_claude_code_mcp_server(name: &str) -> Result<bool, String> {
+    let path = claude_code_config_path()?;
+    let raw = match fs::read_to_string(&path) {
+        Ok(r) => r,
+        Err(_) => return Ok(false),
+    };
+    let mut root: serde_json::Value =
+        serde_json::from_str(&raw).map_err(|e| format!("Parse ~/.claude.json: {e}"))?;
+    let removed = root
+        .as_object_mut()
+        .and_then(|o| o.get_mut("mcpServers"))
+        .and_then(|s| s.as_object_mut())
+        .map(|servers| servers.remove(name).is_some())
+        .unwrap_or(false);
+    if removed {
+        write_json_atomically(&path, &root)?;
+    }
+    Ok(removed)
+}
+
+fn write_codex_mcp_server(name: &str, server: &serde_json::Value) -> Result<(), String> {
+    let path = codex_config_path()?;
+    let raw = fs::read_to_string(&path).unwrap_or_default();
+    let mut doc: toml_edit::DocumentMut = raw
+        .parse()
+        .map_err(|e| format!("Parse ~/.codex/config.toml: {e}"))?;
+    if doc.get("mcp_servers").is_none() {
+        let mut t = toml_edit::Table::new();
+        t.set_implicit(true);
+        doc["mcp_servers"] = toml_edit::Item::Table(t);
+    }
+    let servers = doc["mcp_servers"]
+        .as_table_mut()
+        .ok_or_else(|| "mcp_servers in config.toml is not a table.".to_string())?;
+    let obj = server
+        .as_object()
+        .ok_or_else(|| "MCP server config is not an object.".to_string())?;
+    servers.insert(name, toml_edit::Item::Table(json_object_to_toml_table(obj)));
+    write_string_atomically(&path, &doc.to_string())
+}
+
+fn remove_codex_mcp_server(name: &str) -> Result<bool, String> {
+    let path = codex_config_path()?;
+    let raw = match fs::read_to_string(&path) {
+        Ok(r) => r,
+        Err(_) => return Ok(false),
+    };
+    let mut doc: toml_edit::DocumentMut = raw
+        .parse()
+        .map_err(|e| format!("Parse ~/.codex/config.toml: {e}"))?;
+    let removed = doc
+        .get_mut("mcp_servers")
+        .and_then(|i| i.as_table_mut())
+        .map(|t| t.remove(name).is_some())
+        .unwrap_or(false);
+    if removed {
+        write_string_atomically(&path, &doc.to_string())?;
+    }
+    Ok(removed)
+}
+
+/// Apply a cross-tool MCP toggle. wants=true copies the server FROM the other
+/// side INTO the target side (refusing a different-config collision); wants=
+/// false removes it from the target.
+fn apply_mcp_cross_share(change: &LibraryCellChange) -> Result<bool, String> {
+    let name = &change.row_id;
+    let target = change.target_install_id.as_str();
+    let claude = read_claude_code_mcp();
+    let codex = read_codex_mcp();
+
+    if change.wants {
+        match target {
+            MCP_CROSS_CLAUDE_ID => {
+                let server = codex.get(name).ok_or_else(|| {
+                    format!("\"{name}\" isn't defined in Codex to copy from.")
+                })?;
+                if let Some(existing) = claude.get(name) {
+                    if mcp_value_digest(existing) == mcp_value_digest(server) {
+                        return Ok(false); // identical — no-op
+                    }
+                    return Err(format!(
+                        "\"{name}\" already exists in Claude Code with a different config — remove it there first."
+                    ));
+                }
+                write_claude_code_mcp_server(name, server)?;
+                Ok(true)
+            }
+            CODEX_SKILLS_GLOBAL_ID => {
+                let server = claude.get(name).ok_or_else(|| {
+                    format!("\"{name}\" isn't defined in Claude Code to copy from.")
+                })?;
+                if let Some(existing) = codex.get(name) {
+                    if mcp_value_digest(existing) == mcp_value_digest(server) {
+                        return Ok(false);
+                    }
+                    return Err(format!(
+                        "\"{name}\" already exists in Codex with a different config — remove it there first."
+                    ));
+                }
+                write_codex_mcp_server(name, server)?;
+                Ok(true)
+            }
+            other => Err(format!("Unknown MCP column: {other}")),
+        }
+    } else {
+        match target {
+            MCP_CROSS_CLAUDE_ID => remove_claude_code_mcp_server(name),
+            CODEX_SKILLS_GLOBAL_ID => remove_codex_mcp_server(name),
+            other => Err(format!("Unknown MCP column: {other}")),
+        }
+    }
+}
+
 pub fn apply_library_change(
     kind: String,
     change: LibraryCellChange,
 ) -> Result<bool, String> {
     if kind == "skills" {
         return apply_skill_share(&change);
+    }
+    if kind == "mcp_cross" {
+        return apply_mcp_cross_share(&change);
     }
     let installs = list_desktop_installs()?;
     let target = installs
@@ -5487,6 +5921,11 @@ mod commands {
     }
 
     #[tauri::command]
+    pub fn list_mcp_cross_library() -> Result<Vec<LibraryRow>, String> {
+        super::list_mcp_cross_library()
+    }
+
+    #[tauri::command]
     pub fn list_library_preferences() -> Result<Vec<LibraryRow>, String> {
         super::list_preferences_library()
     }
@@ -5587,6 +6026,7 @@ pub fn run() {
             commands::list_codex_sessions_library,
             commands::list_codex_skills_library,
             commands::list_codex_mcp_library,
+            commands::list_mcp_cross_library,
             commands::list_library_preferences,
             commands::apply_library_changes,
             commands::list_library_code_history,
@@ -6750,5 +7190,48 @@ mod tests {
             serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(v["new"], serde_json::json!(42));
         assert!(v.get("old").is_none());
+    }
+
+    #[test]
+    fn mcp_json_to_toml_roundtrip_preserves_command_args_and_env() {
+        // A typical Claude Code stdio MCP server, including a nested env object.
+        let server = serde_json::json!({
+            "command": "npx",
+            "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"],
+            "env": { "API_KEY": "abc123", "DEBUG": "1" }
+        });
+        let obj = server.as_object().unwrap();
+
+        // JSON object -> real TOML table (env should become a sub-table).
+        let table = json_object_to_toml_table(obj);
+        let mut doc = toml_edit::DocumentMut::new();
+        let mut servers = toml_edit::Table::new();
+        servers.set_implicit(true);
+        servers.insert("fs", toml_edit::Item::Table(table));
+        doc["mcp_servers"] = toml_edit::Item::Table(servers);
+        let rendered = doc.to_string();
+        assert!(rendered.contains("[mcp_servers.fs]"));
+        assert!(rendered.contains("[mcp_servers.fs.env]"));
+
+        // TOML -> JSON should reproduce the original config exactly.
+        let parsed: toml_edit::ImDocument<String> = rendered.parse().unwrap();
+        let back = toml_item_to_json(parsed.get("mcp_servers").unwrap().get("fs").unwrap());
+        assert_eq!(
+            mcp_value_digest(&server),
+            mcp_value_digest(&back),
+            "round-tripped config must be digest-stable so the cell reads as `copied`"
+        );
+        assert_eq!(back["command"], serde_json::json!("npx"));
+        assert_eq!(back["env"]["API_KEY"], serde_json::json!("abc123"));
+    }
+
+    #[test]
+    fn canonical_json_string_is_key_order_independent() {
+        let a = serde_json::json!({ "command": "x", "args": ["1", "2"] });
+        let b = serde_json::json!({ "args": ["1", "2"], "command": "x" });
+        assert_eq!(mcp_value_digest(&a), mcp_value_digest(&b));
+        // Array order still matters — these must differ.
+        let c = serde_json::json!({ "command": "x", "args": ["2", "1"] });
+        assert_ne!(mcp_value_digest(&a), mcp_value_digest(&c));
     }
 }

@@ -237,6 +237,8 @@ export const api = {
         ? "list_codex_skills_library"
         : kind === "codex_mcp"
         ? "list_codex_mcp_library"
+        : kind === "mcp_cross"
+        ? "list_mcp_cross_library"
         : "list_library_preferences";
     return invoke(command);
   },
