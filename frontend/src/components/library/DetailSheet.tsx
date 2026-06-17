@@ -141,7 +141,22 @@ function SessionList({
     );
   }
   return (
-    <ul className="mt-1 space-y-1">
+    <>
+      {/* Export is project-level: the converter reads the Claude *CLI* transcript
+          (~/.claude/projects/<slug>), not the per-session Desktop panel store,
+          so we export the newest CLI session for this project. */}
+      {kind === "code_history" && onExportClaudeSession ? (
+        <button
+          type="button"
+          disabled={transferBusy}
+          onClick={() => onExportClaudeSession(rowId, "")}
+          className="mt-1 inline-flex items-center gap-1 rounded bg-foreground/10 px-1.5 py-0.5 font-sans text-[10px] text-foreground/80 transition-colors hover:bg-foreground/20 disabled:opacity-50"
+        >
+          <ArrowLeftRight className="h-3 w-3" />
+          Export newest → Codex
+        </button>
+      ) : null}
+      <ul className="mt-1 space-y-1">
       {sessions.slice(0, 12).map((s) => (
         <li key={s.session_id} className="rounded-md bg-background/60 px-2 py-1.5">
           <div className="line-clamp-2 font-sans text-[11px] text-foreground/90">
@@ -168,17 +183,6 @@ function SessionList({
               Import to Claude
             </button>
           ) : null}
-          {kind === "code_history" && onExportClaudeSession ? (
-            <button
-              type="button"
-              disabled={transferBusy}
-              onClick={() => onExportClaudeSession(rowId, s.session_id)}
-              className="mt-1.5 inline-flex items-center gap-1 rounded bg-foreground/10 px-1.5 py-0.5 font-sans text-[10px] text-foreground/80 transition-colors hover:bg-foreground/20 disabled:opacity-50"
-            >
-              <ArrowLeftRight className="h-3 w-3" />
-              Export to Codex
-            </button>
-          ) : null}
         </li>
       ))}
       {sessions.length > 12 ? (
@@ -186,7 +190,8 @@ function SessionList({
           +{sessions.length - 12} more…
         </li>
       ) : null}
-    </ul>
+      </ul>
+    </>
   );
 }
 
