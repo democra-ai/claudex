@@ -310,6 +310,34 @@ fn remove_path(path: &Path) -> Result<(), String> {
     }
 }
 
+/// Guarded recursive delete for a profile's DATA directory. All profile-data
+/// erases route through here so a corrupted registry / bad caller can never
+/// `rm -rf` the home directory, root, or a too-shallow path. Refuses anything
+/// that is $HOME, "/", an ancestor of $HOME, or fewer than 2 levels under $HOME.
+fn remove_data_dir(path: &Path) -> Result<(), String> {
+    let home = home_dir()?;
+    let canon = match path.canonicalize() {
+        Ok(c) => c,
+        Err(e) if e.kind() == ErrorKind::NotFound => return Ok(()), // already gone
+        Err(e) => return Err(format!("Canonicalize {}: {e}", path.display())),
+    };
+    if canon == home || canon == Path::new("/") {
+        return Err("Refusing to delete the home or root directory.".to_string());
+    }
+    if home.starts_with(&canon) {
+        return Err("Refusing to delete an ancestor of the home directory.".to_string());
+    }
+    // Must live under $HOME, at least 2 components deep (e.g. ~/.codex-x is ok;
+    // ~/x alone is refused as too shallow / risky).
+    match canon.strip_prefix(&home) {
+        Ok(rel) if rel.components().count() >= 1 => remove_path(&canon),
+        _ => Err(format!(
+            "Refusing to delete {} — not safely under the home directory.",
+            canon.display()
+        )),
+    }
+}
+
 fn path_points_to(path: &Path, target: &Path) -> bool {
     let Ok(link) = fs::read_link(path) else {
         return false;
@@ -2357,11 +2385,27 @@ pub fn delete_desktop_profile(install_id: String, delete_data: bool) -> Result<(
         .into_iter()
         .find(|i| i.id == install_id)
         .ok_or_else(|| format!("Profile not found: {install_id}"))?;
-    if install.kind == "default" {
-        return Err("The default Claude install can't be deleted".to_string());
-    }
     if install.is_running {
         return Err(format!("Quit {} before deleting it", install.name));
+    }
+
+    // The default install has no launcher / registry entry — the only thing to
+    // remove is the real ~/Library data dir (the primary login + chats). Allow
+    // it (profiles are equal), but ONLY with an explicit data-erase + a path
+    // assertion + the guarded delete.
+    if install.kind == "default" {
+        if !delete_data {
+            return Err(
+                "The default install has nothing to remove but its data — enable 'erase data' to delete it."
+                    .to_string(),
+            );
+        }
+        let dd = PathBuf::from(&install.data_dir);
+        if dd != default_desktop_data_dir()? {
+            return Err("Default data dir path mismatch — refusing to delete.".to_string());
+        }
+        remove_data_dir(&dd)?;
+        return Ok(());
     }
 
     let mut registry = load_registry()?;
@@ -2382,13 +2426,13 @@ pub fn delete_desktop_profile(install_id: String, delete_data: bool) -> Result<(
         }
         if delete_data {
             if let Some(cfg) = code.get("configDir").and_then(|v| v.as_str()) {
-                remove_path(Path::new(cfg))?;
+                remove_data_dir(Path::new(cfg))?;
             }
         }
     }
 
     if delete_data {
-        remove_path(Path::new(&install.data_dir))?;
+        remove_data_dir(Path::new(&install.data_dir))?;
     }
 
     // Clear only the Claude halves; keep a Codex half if this entry has one.
@@ -2410,11 +2454,34 @@ pub fn delete_codex_profile(install_id: String, delete_data: bool) -> Result<(),
         .into_iter()
         .find(|i| i.id == install_id)
         .ok_or_else(|| format!("Codex profile not found: {install_id}"))?;
-    if install.kind == "default" {
-        return Err("The default Codex install can't be deleted".to_string());
-    }
     if install.is_running {
         return Err(format!("Quit Codex {} before deleting it", install.name));
+    }
+
+    // Default Codex install: only its real data dir is removable, and ONLY when
+    // it's the sole Codex install — ~/.codex (its CODEX_HOME) is shared by every
+    // Codex profile, so erasing it while others exist would nuke their auth too.
+    if install.kind == "default" {
+        if !delete_data {
+            return Err(
+                "The default Codex install has nothing to remove but its data — enable 'erase data' to delete it."
+                    .to_string(),
+            );
+        }
+        if codex_profile_columns()?.len() > 1 {
+            return Err(
+                "~/.codex is shared by all Codex profiles — delete the other Codex profiles before erasing the default."
+                    .to_string(),
+            );
+        }
+        let dd = PathBuf::from(&install.data_dir);
+        if dd != default_codex_desktop_data_dir()? {
+            return Err("Default Codex data dir path mismatch — refusing to delete.".to_string());
+        }
+        remove_data_dir(&dd)?;
+        // Also the shared ~/.codex agent home (sole install, so safe).
+        remove_data_dir(&codex_home_dir()?)?;
+        return Ok(());
     }
 
     let mut registry = load_registry()?;
@@ -2426,14 +2493,13 @@ pub fn delete_codex_profile(install_id: String, delete_data: bool) -> Result<(),
         remove_path(Path::new(launcher))?;
     }
     if delete_data {
-        remove_path(Path::new(&install.data_dir))?;
+        remove_data_dir(Path::new(&install.data_dir))?;
         // Also erase the per-profile CODEX_HOME (auth.json, sessions, config).
         // Use the DETERMINISTIC path (~/.codex-<clean>), never a registry-
-        // supplied string — sanitize_profile_name guarantees it can't be $HOME
-        // or "/". Belt-and-suspenders: also refuse the shared default ~/.codex.
+        // supplied string. Belt-and-suspenders: also refuse the shared default.
         let codex_home = codex_home_dir_for(&install.name)?;
         if codex_home_dir().map(|d| d != codex_home).unwrap_or(true) {
-            remove_path(&codex_home)?;
+            remove_data_dir(&codex_home)?;
         }
     }
 
@@ -8328,6 +8394,23 @@ mod tests {
         let tgt_sessions = tgt.path().join("sessions");
         assert!(tgt_sessions.join("from-c.jsonl").exists(), "copied C's content");
         assert!(!tgt_sessions.join("from-b.jsonl").exists(), "did NOT copy B's content");
+    }
+
+    #[test]
+    fn remove_data_dir_refuses_dangerous_paths() {
+        // Refuses home, root, and anything not safely under home — without
+        // deleting anything (these all error before any removal).
+        let home = home_dir().unwrap();
+        assert!(remove_data_dir(&home).is_err(), "home refused");
+        assert!(remove_data_dir(Path::new("/")).is_err(), "root refused");
+        // A real dir outside home (tempdir lives under /var or /tmp) → refused.
+        let outside = tempfile::tempdir().unwrap();
+        assert!(
+            remove_data_dir(outside.path()).is_err(),
+            "outside-home refused"
+        );
+        // A non-existent path is a no-op (idempotent), not an error.
+        assert!(remove_data_dir(&home.join(".claudex-does-not-exist-xyz")).is_ok());
     }
 
     #[test]

@@ -27,12 +27,17 @@ import { api } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import type { DesktopInstall, ProfileStats } from "@/types";
 import { UsageBar } from "./UsageBar";
+import { DeleteProfileButton } from "./DeleteProfileButton";
 
 interface ProfileDetailProps {
   install: DesktopInstall;
   onClose: () => void;
   onLaunch: (install: DesktopInstall) => void;
   resolveName: (installId: string) => string | undefined;
+  /** Which world this profile belongs to (for the delete affordance). */
+  world?: "claude" | "codex";
+  /** Delete this profile. When provided, a guarded delete lives in the footer. */
+  onDelete?: (deleteData: boolean) => Promise<void>;
 }
 
 function formatBytes(bytes: number | null | undefined): string {
@@ -174,6 +179,8 @@ export function ProfileDetail({
   onClose,
   onLaunch,
   resolveName,
+  world = "claude",
+  onDelete,
 }: ProfileDetailProps) {
   const [stats, setStats] = useState<ProfileStats | null>(null);
   const [loading, setLoading] = useState(true);
@@ -607,6 +614,25 @@ export function ProfileDetail({
           </>
         )}
       </div>
+      {onDelete ? (
+        <div className="border-t p-2">
+          <DeleteProfileButton
+            name={
+              install.kind === "default"
+                ? world === "codex"
+                  ? "Default Codex"
+                  : "Default ~/.claude"
+                : install.name
+            }
+            kind={install.kind}
+            isRunning={install.is_running}
+            world={world}
+            busy={false}
+            onDelete={onDelete}
+            variant="full"
+          />
+        </div>
+      ) : null}
     </div>
   );
 }

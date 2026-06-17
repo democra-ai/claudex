@@ -19,8 +19,8 @@ import { Matrix } from "./Matrix";
 import { pendingKeyFor, type PendingChange } from "./pending";
 import { DetailSheet, type Selection } from "./DetailSheet";
 import { PendingBar } from "./PendingBar";
-import { DeleteProfileButton } from "./DeleteProfileButton";
 import { ClaudeMark, CodexMark } from "./PlatformMarks";
+import { profileColorVars } from "@/lib/profileColor";
 
 /**
  * A walled-off profile world (Claude / Codex). Each region owns a tinted
@@ -226,7 +226,6 @@ interface SidebarProfileRowProps {
   onToggleVisible: () => void;
   onSelect: () => void;
   onLaunch: () => void;
-  onDelete: (deleteData: boolean) => Promise<void>;
   busy: boolean;
 }
 
@@ -237,7 +236,6 @@ function SidebarProfileRow({
   onToggleVisible,
   onSelect,
   onLaunch,
-  onDelete,
   busy,
 }: SidebarProfileRowProps) {
   const running = profile.is_running;
@@ -268,7 +266,8 @@ function SidebarProfileRow({
             : `Show ${profile.name} details`
         }
       >
-        {/* Status dot: pulsing green when live, muted otherwise. */}
+        {/* Identity dot in the profile's colour; a green pulse rides on top
+         *  when the profile is live. */}
         <span className="relative inline-flex h-2 w-2 shrink-0 items-center justify-center">
           {running ? (
             <>
@@ -277,12 +276,8 @@ function SidebarProfileRow({
             </>
           ) : (
             <span
-              className={cn(
-                "inline-block h-1.5 w-1.5 rounded-full",
-                profile.kind === "default"
-                  ? "bg-muted-foreground/60"
-                  : "bg-muted-foreground/30",
-              )}
+              className="profile-bg inline-block h-2 w-2 rounded-full"
+              style={profileColorVars(profile.id)}
             />
           )}
         </span>
@@ -294,6 +289,11 @@ function SidebarProfileRow({
         >
           {profile.kind === "default" ? "Default" : profile.name}
         </span>
+        {profile.kind === "default" ? (
+          <span className="rounded bg-muted px-1 py-0.5 font-sans text-[8px] uppercase tracking-wider text-muted-foreground/70">
+            original
+          </span>
+        ) : null}
         {running ? (
           <span className="ml-auto rounded-full bg-primary/15 px-1.5 py-0.5 font-sans text-[9px] uppercase tracking-wider text-primary">
             live
@@ -312,14 +312,6 @@ function SidebarProfileRow({
       >
         <Play className="h-3 w-3" />
       </button>
-      <DeleteProfileButton
-        name={profile.name}
-        kind={profile.kind}
-        isRunning={running}
-        world="claude"
-        busy={busy}
-        onDelete={onDelete}
-      />
     </div>
   );
 }
@@ -819,7 +811,27 @@ export default function ContentLibraryPage() {
     setSelection((current) =>
       current?.type === "profile" && current.install.id === install.id
         ? null
-        : { type: "profile", install },
+        : { type: "profile", install, world: "claude" },
+    );
+  }, []);
+
+  // Codex profiles open the same detail sheet (mapped to a DesktopInstall
+  // shape). The detail's delete lives here too — no dangerous inline trash.
+  const handleSelectCodex = useCallback((c: CodexInstall) => {
+    const install: DesktopInstall = {
+      id: c.id,
+      name: c.name,
+      kind: c.kind,
+      data_dir: c.data_dir,
+      app_path: c.app_path,
+      launcher_path: c.launcher_path,
+      managed: c.managed,
+      is_running: c.is_running,
+    };
+    setSelection((current) =>
+      current?.type === "profile" && current.install.id === install.id
+        ? null
+        : { type: "profile", install, world: "codex" },
     );
   }, []);
 
@@ -1006,7 +1018,6 @@ export default function ContentLibraryPage() {
                       onToggleVisible={() => handleToggleVisible(p.id)}
                       onSelect={() => handleSelectProfile(p)}
                       onLaunch={() => handleLaunch(p)}
-                      onDelete={(deleteData) => handleDeleteClaude(p, deleteData)}
                       busy={busy}
                     />
                   ))}
@@ -1062,7 +1073,11 @@ export default function ContentLibraryPage() {
                     key={c.id}
                     className={cn(
                       "group flex items-center gap-1.5 rounded-md pl-1.5 pr-1 transition-colors",
-                      c.is_running ? "bg-primary/4" : "hover:bg-muted/60",
+                      selectedInstallId === c.id
+                        ? "bg-primary/8"
+                        : c.is_running
+                        ? "bg-primary/4"
+                        : "hover:bg-muted/60",
                     )}
                   >
                     <span className="relative ml-1 inline-flex h-2 w-2 shrink-0 items-center justify-center">
@@ -1073,27 +1088,38 @@ export default function ContentLibraryPage() {
                         </>
                       ) : (
                         <span
-                          className={cn(
-                            "inline-block h-1.5 w-1.5 rounded-full",
-                            c.kind === "default" ? "bg-muted-foreground/60" : "bg-muted-foreground/30",
-                          )}
+                          className="profile-bg inline-block h-2 w-2 rounded-full"
+                          style={profileColorVars(c.id)}
                         />
                       )}
                     </span>
-                    <span
-                      className={cn(
-                        "flex-1 truncate py-1.5 pl-1 font-sans text-[13px]",
-                        c.is_running && "font-medium",
-                      )}
-                      title={c.data_dir}
+                    <button
+                      type="button"
+                      onClick={() => handleSelectCodex(c)}
+                      className="flex min-w-0 flex-1 items-center gap-1.5 py-1.5 pl-1 text-left"
+                      title={`Show Codex ${c.name} details`}
                     >
-                      {c.kind === "default" ? "Default" : c.name}
-                    </span>
-                    {c.is_running ? (
-                      <span className="mr-1 rounded-full bg-primary/15 px-1.5 py-0.5 font-sans text-[9px] uppercase tracking-wider text-primary">
-                        live
+                      <span
+                        className={cn(
+                          "truncate font-sans text-[13px]",
+                          c.is_running && "font-medium",
+                        )}
+                      >
+                        {c.kind === "default" ? "Default" : c.name}
                       </span>
-                    ) : null}
+                      {c.kind === "default" ? (
+                        <span className="rounded bg-muted px-1 py-0.5 font-sans text-[8px] uppercase tracking-wider text-muted-foreground/70">
+                          original
+                        </span>
+                      ) : null}
+                      {c.is_running ? (
+                        <span className="ml-auto rounded-full bg-primary/15 px-1.5 py-0.5 font-sans text-[9px] uppercase tracking-wider text-primary">
+                          live
+                        </span>
+                      ) : selectedInstallId === c.id ? (
+                        <Info className="ml-auto h-3 w-3 shrink-0 text-primary" />
+                      ) : null}
+                    </button>
                     <button
                       type="button"
                       onClick={() => handleLaunchCodex(c)}
@@ -1104,14 +1130,6 @@ export default function ContentLibraryPage() {
                     >
                       <Play className="h-3 w-3" />
                     </button>
-                    <DeleteProfileButton
-                      name={c.name}
-                      kind={c.kind}
-                      isRunning={c.is_running}
-                      world="codex"
-                      busy={busy}
-                      onDelete={(deleteData) => handleDeleteCodex(c, deleteData)}
-                    />
                   </div>
                 ))}
               </SidebarRegion>
@@ -1220,6 +1238,31 @@ export default function ContentLibraryPage() {
         onImportCodexSession={handleImportCodexSession}
         onExportClaudeSession={handleExportClaudeSession}
         transferBusy={importing}
+        onDeleteProfile={
+          selection?.type === "profile"
+            ? async (deleteData: boolean) => {
+                const inst = selection.install;
+                if (selection.world === "codex") {
+                  await handleDeleteCodex(
+                    {
+                      id: inst.id,
+                      name: inst.name,
+                      kind: inst.kind,
+                      data_dir: inst.data_dir,
+                      app_path: inst.app_path,
+                      launcher_path: inst.launcher_path,
+                      managed: inst.managed,
+                      is_running: inst.is_running,
+                    },
+                    deleteData,
+                  );
+                } else {
+                  await handleDeleteClaude(inst, deleteData);
+                }
+                setSelection(null);
+              }
+            : undefined
+        }
       />
 
       {/* Floating pending bar */}

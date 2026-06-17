@@ -69,7 +69,6 @@ export function MatrixCell({
             "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
             interactive ? "hover:bg-primary/8" : "hover:bg-muted/40 cursor-default",
             isPending && "bg-amber-500/10 ring-1 ring-inset ring-amber-500/30",
-            cell.kind === "default" && "bg-muted/30",
           )}
           aria-label={tooltip}
           type="button"

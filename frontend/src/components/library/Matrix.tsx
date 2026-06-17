@@ -112,7 +112,6 @@ export function Matrix({
               key={p.id}
               className={cn(
                 "flex flex-col items-center justify-center px-1 py-2 leading-none",
-                p.kind === "default" && "bg-muted/40",
                 // The global Codex skills column: tint + a left wall so it
                 // never reads as just another Claude profile.
                 isCodex && "border-l-2 border-border bg-foreground/5",

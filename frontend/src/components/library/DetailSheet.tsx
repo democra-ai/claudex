@@ -13,7 +13,7 @@ import { ProfileDetail } from "./ProfileDetail";
 
 export type Selection =
   | { type: "row"; row: LibraryRow; kind: LibraryKind }
-  | { type: "profile"; install: DesktopInstall }
+  | { type: "profile"; install: DesktopInstall; world?: "claude" | "codex" }
   | null;
 
 interface DetailSheetProps {
@@ -27,6 +27,8 @@ interface DetailSheetProps {
   onExportClaudeSession?: (cwd: string, sessionId: string) => void;
   /** True while an import/export round-trip is running. */
   transferBusy?: boolean;
+  /** Delete the selected profile (routed by world in the parent). */
+  onDeleteProfile?: (deleteData: boolean) => Promise<void>;
 }
 
 /**
@@ -42,6 +44,7 @@ export function DetailSheet({
   onImportCodexSession,
   onExportClaudeSession,
   transferBusy,
+  onDeleteProfile,
 }: DetailSheetProps) {
   const visible = selection !== null;
   return (
@@ -57,6 +60,8 @@ export function DetailSheet({
           onClose={onClose}
           onLaunch={onLaunch}
           resolveName={resolveInstallName}
+          world={selection.world ?? "claude"}
+          onDelete={onDeleteProfile}
         />
       ) : selection?.type === "row" ? (
         <RowDetail
