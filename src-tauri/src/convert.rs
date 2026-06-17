@@ -522,7 +522,7 @@ fn first_user_snippet(ir: &Ir) -> Option<String> {
 // Session resolution
 // ---------------------------------------------------------------------------
 
-fn walk_rollouts(dir: &Path, out: &mut Vec<PathBuf>) {
+pub(crate) fn walk_rollouts(dir: &Path, out: &mut Vec<PathBuf>) {
     if let Ok(rd) = fs::read_dir(dir) {
         for e in rd.flatten() {
             let p = e.path();
@@ -534,6 +534,52 @@ fn walk_rollouts(dir: &Path, out: &mut Vec<PathBuf>) {
                 }
             }
         }
+    }
+}
+
+/// Cheap head-only read of a Codex rollout: parse just the FIRST line
+/// (`session_meta`) for (id, cwd, model). Used by list views to group sessions
+/// by project without parsing the whole transcript. Falls back to the trailing
+/// UUID in the filename for the id. Returns None if the file can't be read.
+pub(crate) fn read_rollout_meta(path: &Path) -> Option<(String, String, Option<String>)> {
+    let file = fs::File::open(path).ok()?;
+    let mut first = String::new();
+    {
+        use std::io::BufRead;
+        std::io::BufReader::new(file).read_line(&mut first).ok()?;
+    }
+    let rec: Value = serde_json::from_str(first.trim()).ok()?;
+    let payload = rec.get("payload").cloned().unwrap_or(json!({}));
+    let id = payload
+        .get("id")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| id_from_rollout_filename(path));
+    let cwd = payload
+        .get("cwd")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let model = payload
+        .get("model")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    Some((id, cwd, model))
+}
+
+/// Extract the trailing UUID from `rollout-<ts>-<uuid>.jsonl`, or the stem.
+fn id_from_rollout_filename(path: &Path) -> String {
+    let stem = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("")
+        .to_string();
+    // UUID is the last 5 dash-groups (8-4-4-4-12).
+    let parts: Vec<&str> = stem.split('-').collect();
+    if parts.len() >= 5 {
+        parts[parts.len() - 5..].join("-")
+    } else {
+        stem
     }
 }
 
@@ -633,10 +679,27 @@ pub fn import_codex_session_to_claude(source: String) -> Result<ImportResult, St
     import_codex_session_to_claude_in(&source, &default_codex_home())
 }
 
-pub fn import_claude_session_to_codex(source: String) -> Result<ImportResult, String> {
-    let file = resolve_claude_session(&source, &default_claude_home())
-        .ok_or_else(|| format!("No Claude session found for: {}", if source.is_empty() { "(latest)" } else { &source }))?;
-    let ir = parse_claude_session(&file);
+/// Pick the newest Claude Code CLI transcript (`~/.claude/projects/<slug>/*.jsonl`)
+/// for a project cwd. The GUI's "Export to Codex" passes a project cwd, but the
+/// converter only understands CLI transcripts (not the Desktop panel store), so
+/// we map cwd -> slug -> latest transcript.
+fn latest_claude_transcript_for_cwd(cwd: &str, claude_home: &Path) -> Option<PathBuf> {
+    let dir = claude_home.join("projects").join(claude_slug(cwd));
+    let mut files: Vec<PathBuf> = Vec::new();
+    if let Ok(rd) = fs::read_dir(&dir) {
+        for f in rd.flatten() {
+            let p = f.path();
+            if p.extension().and_then(|e| e.to_str()) == Some("jsonl") {
+                files.push(p);
+            }
+        }
+    }
+    files.sort();
+    files.into_iter().last()
+}
+
+fn emit_codex_from_claude_file(file: &Path) -> Result<ImportResult, String> {
+    let ir = parse_claude_session(file);
     if ir.turns.is_empty() {
         return Err(format!("Claude session has no convertible turns: {}", file.display()));
     }
@@ -650,6 +713,26 @@ pub fn import_claude_session_to_codex(source: String) -> Result<ImportResult, St
         turns,
         picker: Some("maybe".to_string()),
     })
+}
+
+pub fn import_claude_session_to_codex(source: String) -> Result<ImportResult, String> {
+    // The GUI passes a project cwd — resolve the newest CLI transcript for it
+    // first. Fall back to treating `source` as a session id / explicit path.
+    if !source.is_empty() {
+        if let Some(file) = latest_claude_transcript_for_cwd(&source, &default_claude_home()) {
+            return emit_codex_from_claude_file(&file);
+        }
+    }
+    let file = resolve_claude_session(&source, &default_claude_home()).ok_or_else(|| {
+        if source.is_empty() {
+            "No Claude Code session found.".to_string()
+        } else {
+            format!(
+                "No Claude Code session found for project \"{source}\". Open it in `claude` first so it has a transcript to export."
+            )
+        }
+    })?;
+    emit_codex_from_claude_file(&file)
 }
 
 #[cfg(test)]
@@ -668,6 +751,41 @@ mod tests {
         let f = dir.join("rollout-test.jsonl");
         fs::write(&f, lines.iter().map(|l| l.to_string()).collect::<Vec<_>>().join("\n")).unwrap();
         f
+    }
+
+    #[test]
+    fn read_rollout_meta_head_only_extracts_id_cwd_model() {
+        let dir = tempfile::tempdir().unwrap();
+        let f = codex_fixture(dir.path());
+        let (id, cwd, model) = read_rollout_meta(&f).expect("meta");
+        assert_eq!(id, "x");
+        assert_eq!(cwd, "/Users/me/proj");
+        assert_eq!(model.as_deref(), Some("gpt-5"));
+    }
+
+    #[test]
+    fn latest_claude_transcript_for_cwd_resolves_by_slug_and_picks_newest() {
+        let home = tempfile::tempdir().unwrap();
+        let cwd = "/Users/me/proj";
+        let dir = home.path().join("projects").join(claude_slug(cwd));
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("aaaa.jsonl"), "{}").unwrap();
+        fs::write(dir.join("zzzz.jsonl"), "{}").unwrap();
+        let got = latest_claude_transcript_for_cwd(cwd, home.path()).expect("transcript");
+        assert!(got.ends_with("zzzz.jsonl"), "picks the lexicographically newest");
+        // Unknown project resolves to nothing.
+        assert!(latest_claude_transcript_for_cwd("/no/such/proj", home.path()).is_none());
+    }
+
+    #[test]
+    fn id_from_rollout_filename_pulls_trailing_uuid() {
+        let p = Path::new(
+            "/x/rollout-2026-03-27T19-12-50-019d30b6-a900-7100-84eb-12f38d7d8658.jsonl",
+        );
+        assert_eq!(
+            id_from_rollout_filename(p),
+            "019d30b6-a900-7100-84eb-12f38d7d8658"
+        );
     }
 
     #[test]

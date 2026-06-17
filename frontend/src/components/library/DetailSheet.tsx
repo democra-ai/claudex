@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Loader2, X } from "lucide-react";
+import { ArrowLeftRight, Loader2, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { api } from "@/lib/api";
 import type {
@@ -21,6 +21,12 @@ interface DetailSheetProps {
   onClose: () => void;
   onLaunch: (install: DesktopInstall) => void;
   resolveInstallName: (installId: string) => string | undefined;
+  /** Import a Codex session (by id) into Claude Code. */
+  onImportCodexSession?: (sessionId: string) => void;
+  /** Export a Claude Code session into Codex (by cwd project + session id). */
+  onExportClaudeSession?: (cwd: string, sessionId: string) => void;
+  /** True while an import/export round-trip is running. */
+  transferBusy?: boolean;
 }
 
 /**
@@ -33,6 +39,9 @@ export function DetailSheet({
   onClose,
   onLaunch,
   resolveInstallName,
+  onImportCodexSession,
+  onExportClaudeSession,
+  transferBusy,
 }: DetailSheetProps) {
   const visible = selection !== null;
   return (
@@ -55,6 +64,9 @@ export function DetailSheet({
           kind={selection.kind}
           onClose={onClose}
           resolveInstallName={resolveInstallName}
+          onImportCodexSession={onImportCodexSession}
+          onExportClaudeSession={onExportClaudeSession}
+          transferBusy={transferBusy}
         />
       ) : null}
     </aside>
@@ -75,24 +87,33 @@ function SessionList({
   installId,
   installName,
   rowId,
-  isCowork,
+  kind,
+  onImportCodexSession,
+  onExportClaudeSession,
+  transferBusy,
 }: {
   installId: string;
   installName: string;
   rowId: string;
-  isCowork: boolean;
+  kind: LibraryKind;
+  onImportCodexSession?: (sessionId: string) => void;
+  onExportClaudeSession?: (cwd: string, sessionId: string) => void;
+  transferBusy?: boolean;
 }) {
   const [sessions, setSessions] = useState<LocalSession[] | null>(null);
   const [loading, setLoading] = useState(true);
+  const isCodex = kind === "codex_sessions";
+  const isCowork = kind === "cowork_sessions";
 
   useEffect(() => {
     let alive = true;
     setLoading(true);
-    api
-      .listSessionsForProject(installId, rowId, isCowork)
-      .then((s) => {
-        if (alive) setSessions(s);
-      })
+    const p = isCodex
+      ? api.listCodexSessionsForProject(installId, rowId)
+      : api.listSessionsForProject(installId, rowId, isCowork);
+    p.then((s) => {
+      if (alive) setSessions(s);
+    })
       .catch(() => {
         if (alive) setSessions([]);
       })
@@ -102,7 +123,7 @@ function SessionList({
     return () => {
       alive = false;
     };
-  }, [installId, rowId, isCowork]);
+  }, [installId, rowId, isCodex, isCowork]);
 
   if (loading) {
     return (
@@ -125,15 +146,39 @@ function SessionList({
         <li key={s.session_id} className="rounded-md bg-background/60 px-2 py-1.5">
           <div className="line-clamp-2 font-sans text-[11px] text-foreground/90">
             {s.title || (
-              <span className="italic text-muted-foreground">Untitled</span>
+              <span className="italic text-muted-foreground">
+                {s.session_id.slice(0, 8)}…
+              </span>
             )}
           </div>
-          <div className="mt-0.5 flex flex-wrap gap-x-2 font-mono text-[9px] text-muted-foreground/70">
+          <div className="mt-0.5 flex flex-wrap items-center gap-x-2 font-mono text-[9px] text-muted-foreground/70">
             {s.last_activity_ms ? (
               <span>{formatRelative(s.last_activity_ms)}</span>
             ) : null}
             {s.model ? <span>{s.model.replace(/\[.*\]$/, "")}</span> : null}
           </div>
+          {isCodex && onImportCodexSession ? (
+            <button
+              type="button"
+              disabled={transferBusy}
+              onClick={() => onImportCodexSession(s.session_id)}
+              className="mt-1.5 inline-flex items-center gap-1 rounded bg-primary/10 px-1.5 py-0.5 font-sans text-[10px] text-primary transition-colors hover:bg-primary/20 disabled:opacity-50"
+            >
+              <ArrowLeftRight className="h-3 w-3" />
+              Import to Claude
+            </button>
+          ) : null}
+          {kind === "code_history" && onExportClaudeSession ? (
+            <button
+              type="button"
+              disabled={transferBusy}
+              onClick={() => onExportClaudeSession(rowId, s.session_id)}
+              className="mt-1.5 inline-flex items-center gap-1 rounded bg-foreground/10 px-1.5 py-0.5 font-sans text-[10px] text-foreground/80 transition-colors hover:bg-foreground/20 disabled:opacity-50"
+            >
+              <ArrowLeftRight className="h-3 w-3" />
+              Export to Codex
+            </button>
+          ) : null}
         </li>
       ))}
       {sessions.length > 12 ? (
@@ -150,16 +195,22 @@ function RowDetail({
   kind,
   onClose,
   resolveInstallName,
+  onImportCodexSession,
+  onExportClaudeSession,
+  transferBusy,
 }: {
   row: LibraryRow;
   kind: LibraryKind;
   onClose: () => void;
   resolveInstallName: (installId: string) => string | undefined;
+  onImportCodexSession?: (sessionId: string) => void;
+  onExportClaudeSession?: (cwd: string, sessionId: string) => void;
+  transferBusy?: boolean;
 }) {
   const showSessions =
-    (kind === "code_history" || kind === "cowork_sessions") &&
-    row.id !== "__workspace__";
-  const isCowork = kind === "cowork_sessions";
+    ((kind === "code_history" || kind === "cowork_sessions") &&
+      row.id !== "__workspace__") ||
+    (kind === "codex_sessions" && row.id !== "__all_sessions__");
   return (
     <div className="sheet-slide flex h-full flex-col">
       <header className="flex items-start justify-between gap-2 border-b px-4 py-3">
@@ -232,7 +283,10 @@ function RowDetail({
                     resolveInstallName(cell.install_id) ?? cell.install_name
                   }
                   rowId={row.id}
-                  isCowork={isCowork}
+                  kind={kind}
+                  onImportCodexSession={onImportCodexSession}
+                  onExportClaudeSession={onExportClaudeSession}
+                  transferBusy={transferBusy}
                 />
               ) : null}
             </li>

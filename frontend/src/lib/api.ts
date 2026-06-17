@@ -265,6 +265,13 @@ export const api = {
     });
   },
 
+  listCodexSessionsForProject(
+    installId: string,
+    cwd: string,
+  ): Promise<LocalSession[]> {
+    return invoke("list_codex_sessions_for_project", { installId, cwd });
+  },
+
   applyLibraryChanges(
     kind: LibraryKind,
     changes: LibraryCellChange[],

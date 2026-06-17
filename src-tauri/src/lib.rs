@@ -4270,71 +4270,299 @@ pub fn import_codex_session_to_claude_any_home(
     Err(last_err.unwrap_or_else(|| "No Codex session found.".to_string()))
 }
 
-/// Codex sessions: one row per session, present only in its OWNING profile's
-/// column (sessions don't cross accounts). Browse-only; the import action
-/// (frontend) resolves the session across every profile home.
+const CODEX_SESSIONS_DIR: &str = "sessions";
+/// Row id of the synthetic whole-`sessions/` share row.
+const CODEX_ALL_SESSIONS_ID: &str = "__all_sessions__";
+/// cwd bucket for rollouts whose session_meta has no cwd.
+const CODEX_NO_PROJECT: &str = "(no project)";
+
+/// One Codex session, attributed to its project (cwd). `last_activity_ms` is the
+/// rollout file mtime (cheap; no full parse).
+struct CodexSessionMeta {
+    session_id: String,
+    cwd: String,
+    model: Option<String>,
+    last_activity_ms: i64,
+}
+
+/// Scan a CODEX_HOME's sessions/ tree (head-only read per rollout for cwd/id).
+fn scan_codex_rollouts(home: &Path) -> Vec<CodexSessionMeta> {
+    let mut files = Vec::new();
+    convert::walk_rollouts(&home.join(CODEX_SESSIONS_DIR), &mut files);
+    let mut out = Vec::new();
+    for f in files {
+        let (id, cwd, model) = match convert::read_rollout_meta(&f) {
+            Some(m) => m,
+            None => continue,
+        };
+        let last = fs::metadata(&f)
+            .ok()
+            .and_then(|m| m.modified().ok())
+            .map(system_time_to_epoch_ms)
+            .unwrap_or(0);
+        out.push(CodexSessionMeta {
+            session_id: id,
+            cwd: if cwd.is_empty() { CODEX_NO_PROJECT.to_string() } else { cwd },
+            model,
+            last_activity_ms: last,
+        });
+    }
+    out
+}
+
+/// Codex sessions, modeled like Claude's "Code sessions": one synthetic
+/// interactive "__all_sessions__" row that symlink-shares the WHOLE
+/// `<CODEX_HOME>/sessions/` dir between accounts, plus one browse-only row per
+/// project (cwd). Drill into a project (DetailSheet) to import a session.
 pub fn list_codex_sessions_library() -> Result<Vec<LibraryRow>, String> {
     let cols = codex_profile_columns()?;
-    let mut rows = Vec::new();
-    for (owner_idx, col) in cols.iter().enumerate() {
-        let idx = col.home.join("session_index.jsonl");
-        let raw = match fs::read_to_string(&idx) {
-            Ok(r) => r,
-            Err(_) => continue,
-        };
-        let mut entries: Vec<(String, String, String)> = raw
-            .lines()
-            .filter(|l| !l.trim().is_empty())
-            .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
-            .map(|v| {
-                let id = v.get("id").and_then(|x| x.as_str()).unwrap_or("").to_string();
-                let name = v
-                    .get("thread_name")
-                    .and_then(|x| x.as_str())
-                    .filter(|s| !s.is_empty())
-                    .unwrap_or("(untitled)")
-                    .to_string();
-                let upd = v.get("updated_at").and_then(|x| x.as_str()).unwrap_or("").to_string();
-                (id, name, upd)
-            })
-            .filter(|(id, _, _)| !id.is_empty())
-            .collect();
-        entries.sort_by(|a, b| b.2.cmp(&a.2)); // newest first
-        for (id, name, upd) in entries {
-            let detail = if upd.len() >= 10 {
-                Some(format!("updated {}", &upd[..10]))
+    // Per-column: scanned sessions + the sessions-dir symlink digest.
+    let per_col: Vec<(Vec<CodexSessionMeta>, Option<String>)> = cols
+        .iter()
+        .map(|c| {
+            let link_d = symlink_target_digest(&c.home.join(CODEX_SESSIONS_DIR));
+            (scan_codex_rollouts(&c.home), link_d)
+        })
+        .collect();
+
+    // Union of project keys, sorted by most-recent activity across columns.
+    let mut keys: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for (sessions, _) in &per_col {
+        for s in sessions {
+            keys.insert(s.cwd.clone());
+        }
+    }
+    let mut keys: Vec<String> = keys.into_iter().collect();
+    keys.sort_by_key(|k| {
+        let latest = per_col
+            .iter()
+            .flat_map(|(s, _)| s.iter())
+            .filter(|s| &s.cwd == k)
+            .map(|s| s.last_activity_ms)
+            .max()
+            .unwrap_or(0);
+        -latest
+    });
+
+    let mut rows: Vec<LibraryRow> = Vec::with_capacity(keys.len() + 1);
+
+    // Synthetic whole-sessions share row.
+    let all_cells: Vec<LibraryCell> = cols
+        .iter()
+        .enumerate()
+        .map(|(i, c)| {
+            let (sessions, link_d) = &per_col[i];
+            let n = sessions.len();
+            let last = sessions.iter().map(|s| s.last_activity_ms).max().unwrap_or(0);
+            let detail = if n > 0 {
+                Some(format!(
+                    "{n} session{} · {}",
+                    if n == 1 { "" } else { "s" },
+                    if last > 0 { humanize_ago(last) } else { "—".into() }
+                ))
             } else {
                 None
             };
-            let cells = cols
-                .iter()
-                .enumerate()
-                .map(|(ci, c)| {
-                    let present = ci == owner_idx;
-                    LibraryCell {
-                        install_id: c.id.clone(),
-                        install_name: c.label.clone(),
-                        data_dir: c.home.join("sessions").to_string_lossy().to_string(),
-                        kind: c.kind.clone(),
-                        state: if present { "independent".into() } else { "absent".into() },
-                        present,
-                        detail: if present { detail.clone() } else { None },
-                        digest: None,
-                        link_target_digest: None,
-                    }
-                })
-                .collect();
-            rows.push(LibraryRow {
-                id,
-                label: name,
-                description: detail,
-                cells,
-                interactive: false,
-                group: Some("Codex sessions".into()),
-            });
-        }
+            LibraryCell {
+                install_id: c.id.clone(),
+                install_name: c.label.clone(),
+                data_dir: c.home.join(CODEX_SESSIONS_DIR).to_string_lossy().to_string(),
+                kind: c.kind.clone(),
+                state: String::new(),
+                present: n > 0,
+                detail,
+                digest: None,
+                link_target_digest: link_d.clone(),
+            }
+        })
+        .collect();
+    let mut all_row = LibraryRow {
+        id: CODEX_ALL_SESSIONS_ID.to_string(),
+        label: "All Codex sessions".into(),
+        description: Some("Toggle to symlink the whole ~/.codex/sessions dir between accounts.".into()),
+        cells: all_cells,
+        interactive: true,
+        group: Some("Sessions".into()),
+    };
+    compute_row_states(&mut all_row, /* supports_symlink */ true);
+    rows.push(all_row);
+
+    // One browse row per project (cwd).
+    let home = std::env::var("HOME").unwrap_or_default();
+    for key in keys {
+        let cells: Vec<LibraryCell> = cols
+            .iter()
+            .enumerate()
+            .map(|(i, c)| {
+                let (sessions, link_d) = &per_col[i];
+                let matching: Vec<&CodexSessionMeta> =
+                    sessions.iter().filter(|s| s.cwd == key).collect();
+                let n = matching.len();
+                let last = matching.iter().map(|s| s.last_activity_ms).max().unwrap_or(0);
+                let detail = if n > 0 {
+                    Some(format!(
+                        "{n} session{} · {}",
+                        if n == 1 { "" } else { "s" },
+                        if last > 0 { humanize_ago(last) } else { "—".into() }
+                    ))
+                } else {
+                    None
+                };
+                LibraryCell {
+                    install_id: c.id.clone(),
+                    install_name: c.label.clone(),
+                    data_dir: c.home.join(CODEX_SESSIONS_DIR).to_string_lossy().to_string(),
+                    kind: c.kind.clone(),
+                    state: String::new(),
+                    present: n > 0,
+                    detail,
+                    digest: None,
+                    link_target_digest: link_d.clone(),
+                }
+            })
+            .collect();
+        let label = if key == CODEX_NO_PROJECT {
+            CODEX_NO_PROJECT.to_string()
+        } else {
+            Path::new(&key)
+                .file_name()
+                .and_then(|n| n.to_str())
+                .map(String::from)
+                .unwrap_or_else(|| key.clone())
+        };
+        let description = if key == CODEX_NO_PROJECT {
+            None
+        } else {
+            Some(key.replace(&home, "~"))
+        };
+        let mut row = LibraryRow {
+            id: key,
+            label,
+            description,
+            cells,
+            interactive: false,
+            group: Some("Projects".into()),
+        };
+        compute_row_states(&mut row, /* supports_symlink */ true);
+        rows.push(row);
     }
+
+    rows.sort_by_key(|r| match r.group.as_deref() {
+        Some("Sessions") => 0,
+        Some("Projects") => 1,
+        _ => 9,
+    });
     Ok(rows)
+}
+
+/// Drill-down: individual Codex sessions in one project (cwd) for one account.
+/// Mapped into LocalSession so the DetailSheet reuses the Claude session list.
+pub fn list_codex_sessions_for_project(
+    install_id: String,
+    cwd: String,
+) -> Result<Vec<LocalSession>, String> {
+    let home = codex_home_for_column(&install_id)?
+        .ok_or_else(|| format!("Unknown Codex profile: {install_id}"))?;
+    let mut sessions: Vec<LocalSession> = scan_codex_rollouts(&home)
+        .into_iter()
+        .filter(|s| s.cwd == cwd)
+        .map(|s| LocalSession {
+            session_id: s.session_id,
+            title: None,
+            cwd: Some(s.cwd),
+            process_name: None,
+            model: s.model,
+            created_at_ms: s.last_activity_ms,
+            last_activity_ms: s.last_activity_ms,
+            account_name: None,
+            email_address: None,
+        })
+        .collect();
+    sessions.sort_by_key(|s| -s.last_activity_ms);
+    Ok(sessions)
+}
+
+/// Symlink the whole `<source_home>/sessions` into `<target_home>/sessions`.
+fn share_codex_sessions(source_home: &Path, target_home: &Path) -> Result<bool, String> {
+    let source = source_home.join(CODEX_SESSIONS_DIR);
+    let target = target_home.join(CODEX_SESSIONS_DIR);
+    if !source.exists() {
+        return Err("Source account has no sessions/ dir yet.".to_string());
+    }
+    if path_points_to(&target, &source) {
+        return Ok(false); // already shared
+    }
+    // Back up any real target sessions dir, then symlink.
+    if fs::symlink_metadata(&target).is_ok() {
+        backup_existing_path(&target, target_home, CODEX_SESSIONS_DIR)?;
+    }
+    symlink_path(&source, &target)?;
+    Ok(true)
+}
+
+/// Undo a sessions symlink: remove it and copy the source content back so the
+/// target ends up standalone.
+fn make_codex_sessions_independent(
+    source_home: &Path,
+    target_home: &Path,
+) -> Result<bool, String> {
+    let source = source_home.join(CODEX_SESSIONS_DIR);
+    let target = target_home.join(CODEX_SESSIONS_DIR);
+    match fs::symlink_metadata(&target) {
+        Ok(meta) if meta.file_type().is_symlink() => {
+            remove_path(&target)?;
+            if source.is_dir() {
+                copy_dir_recursive(&source, &target)?;
+            }
+            Ok(true)
+        }
+        _ => Ok(false), // not a symlink — nothing to undo
+    }
+}
+
+/// Apply the whole-sessions share toggle. Only the synthetic row is actionable;
+/// per-project rows are browse-only (no per-project symlink boundary exists).
+fn apply_codex_sessions_share(change: &LibraryCellChange) -> Result<bool, String> {
+    if change.row_id != CODEX_ALL_SESSIONS_ID {
+        return Err(
+            "Per-project Codex rows are browse-only — toggle 'All Codex sessions' to share, or drill in to import a session."
+                .to_string(),
+        );
+    }
+    let cols = codex_profile_columns()?;
+    let target_home = cols
+        .iter()
+        .find(|c| c.id == change.target_install_id)
+        .map(|c| c.home.clone())
+        .ok_or_else(|| format!("Unknown Codex profile: {}", change.target_install_id))?;
+
+    if change.wants {
+        let source_home = if let Some(src) = &change.source_install_id {
+            cols.iter()
+                .find(|c| &c.id == src)
+                .map(|c| c.home.clone())
+                .ok_or_else(|| format!("Unknown source: {src}"))?
+        } else {
+            // First other column that has a sessions dir with content.
+            cols.iter()
+                .find(|c| {
+                    c.id != change.target_install_id
+                        && c.home.join(CODEX_SESSIONS_DIR).is_dir()
+                        && !scan_codex_rollouts(&c.home).is_empty()
+                })
+                .map(|c| c.home.clone())
+                .ok_or_else(|| "No account has sessions to share from.".to_string())?
+        };
+        share_codex_sessions(&source_home, &target_home)
+    } else {
+        // Find the source the target is currently linked to (any other column).
+        let source_home = cols
+            .iter()
+            .find(|c| c.id != change.target_install_id)
+            .map(|c| c.home.clone())
+            .unwrap_or_else(|| target_home.clone());
+        make_codex_sessions_independent(&source_home, &target_home)
+    }
 }
 
 /// Per-skill share states for the Codex matrix. A cell is "shared" when it is
@@ -5199,6 +5427,9 @@ pub fn apply_library_change(
     }
     if kind == "codex_mcp" {
         return apply_codex_mcp_share(&change);
+    }
+    if kind == "codex_sessions" {
+        return apply_codex_sessions_share(&change);
     }
     if kind == "memory" {
         return apply_memory_share(&change);
@@ -6500,6 +6731,14 @@ mod commands {
     }
 
     #[tauri::command]
+    pub fn list_codex_sessions_for_project(
+        install_id: String,
+        cwd: String,
+    ) -> Result<Vec<LocalSession>, String> {
+        super::list_codex_sessions_for_project(install_id, cwd)
+    }
+
+    #[tauri::command]
     pub fn list_mcp_cross_library() -> Result<Vec<LibraryRow>, String> {
         super::list_mcp_cross_library()
     }
@@ -6610,6 +6849,7 @@ pub fn run() {
             commands::list_codex_sessions_library,
             commands::list_codex_skills_library,
             commands::list_codex_mcp_library,
+            commands::list_codex_sessions_for_project,
             commands::list_mcp_cross_library,
             commands::list_memory_library,
             commands::list_library_preferences,
@@ -7891,6 +8131,40 @@ mod tests {
         let lone = vec![a_skill, c.path().join("y")];
         let states2 = codex_skill_share_states(&lone, &[true, false]);
         assert_eq!(states2[0], "independent");
+    }
+
+    #[test]
+    fn codex_sessions_share_symlinks_then_make_independent_copies_back() {
+        let src_home = tempfile::tempdir().unwrap();
+        let tgt_home = tempfile::tempdir().unwrap();
+        // Source has a real sessions/ dir with a rollout; target has its own.
+        let src_sessions = src_home.path().join("sessions");
+        fs::create_dir_all(&src_sessions).unwrap();
+        fs::write(src_sessions.join("rollout-a.jsonl"), "{}").unwrap();
+        let tgt_sessions = tgt_home.path().join("sessions");
+        fs::create_dir_all(&tgt_sessions).unwrap();
+        fs::write(tgt_sessions.join("rollout-old.jsonl"), "{}").unwrap();
+
+        // Share: target/sessions becomes a symlink to source/sessions.
+        assert!(share_codex_sessions(src_home.path(), tgt_home.path()).unwrap());
+        assert!(tgt_sessions
+            .symlink_metadata()
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert!(tgt_sessions.join("rollout-a.jsonl").exists(), "sees source content");
+        // Idempotent: second share is a no-op.
+        assert!(!share_codex_sessions(src_home.path(), tgt_home.path()).unwrap());
+
+        // Make independent: symlink removed, source content copied back as real.
+        assert!(make_codex_sessions_independent(src_home.path(), tgt_home.path()).unwrap());
+        assert!(!tgt_sessions
+            .symlink_metadata()
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert!(tgt_sessions.is_dir());
+        assert!(tgt_sessions.join("rollout-a.jsonl").exists());
     }
 
     #[test]

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { ArrowLeftRight, Info, Play, Plus, Share2, X } from "lucide-react";
+import { Info, Play, Plus, Share2, X } from "lucide-react";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -164,11 +164,12 @@ const KIND_SCOPE_CAPTION: Partial<Record<LibraryKind, string>> = {
   extensions: "Claude-only — Codex has no extensions equivalent.",
   mcp_servers: "Claude uses JSON, Codex uses TOML — cross-tool MCP would be copy-with-transform, not yet available.",
   cowork_skills: "Claude Cowork only — these are the per-profile Cowork agent skills.",
-  code_history: "Claude-only content.",
   cowork_sessions: "Claude-only content.",
   preferences: "Claude-only content.",
   codex_sessions:
-    "One column per Codex account — each session lives in the account that made it. Select one to import it into Claude Code.",
+    "Codex sessions grouped by project, one column per account. Open a project to import a session into Claude Code; toggle 'All Codex sessions' to symlink-share the whole sessions dir between accounts.",
+  code_history:
+    "Claude Code sessions by project. Open a project to export a session into Codex.",
   codex_skills:
     "Skills per Codex account (~/.codex-<name>/skills). Toggle a cell to share a skill between accounts (live symlink).",
   codex_mcp:
@@ -811,6 +812,26 @@ export default function ContentLibraryPage() {
     [push],
   );
 
+  // Reverse: export a Claude Code session (resolved by its project cwd) into a
+  // fresh Codex rollout. The Codex picker may need a reindex to show it.
+  const handleExportClaudeSession = useCallback(
+    async (cwd: string, _sessionId: string) => {
+      setImporting(true);
+      try {
+        const res = await api.importClaudeSessionToCodex(cwd);
+        push(
+          `Exported ${res.turns} turn${res.turns === 1 ? "" : "s"} → Codex. Resume with:  codex resume ${res.session_id}${res.picker === "maybe" ? "  (may need a Codex reindex to appear in the picker)" : ""}`,
+          "success",
+        );
+      } catch (e) {
+        push(String(e), "error");
+      } finally {
+        setImporting(false);
+      }
+    },
+    [push],
+  );
+
   // Each region's "+" creates that type directly — Claude profile (Desktop
   // launcher + Code CLI alias) or Codex profile (Desktop launcher). Both are
   // --user-data-dir launchers; each isolates its own login.
@@ -892,9 +913,6 @@ export default function ContentLibraryPage() {
   const activeRows = rowsByKind[activeKind] ?? [];
   const selectedRowId =
     selection?.type === "row" ? selection.row.id : null;
-  const selectedRow = selectedRowId
-    ? activeRows.find((r) => r.id === selectedRowId) ?? null
-    : null;
   const selectedInstallId =
     selection?.type === "profile" ? selection.install.id : null;
 
@@ -1123,38 +1141,6 @@ export default function ContentLibraryPage() {
           </div>
         ) : null}
 
-        {/* Import strip — convert the selected Codex session into Claude Code. */}
-        {activeKind === "codex_sessions" ? (
-          <div className="flex items-center justify-between gap-3 rounded-md border border-primary/30 bg-primary/5 px-3 py-2">
-            <div className="min-w-0 font-sans text-[11px] text-muted-foreground">
-              {selectedRow ? (
-                <span>
-                  Selected{" "}
-                  <span className="font-medium text-foreground">
-                    {selectedRow.label}
-                  </span>{" "}
-                  — converts into a new Claude Code session on disk.
-                </span>
-              ) : (
-                <span>
-                  Click a Codex session below to select it, then import it into
-                  Claude Code.
-                </span>
-              )}
-            </div>
-            <Button
-              type="button"
-              size="sm"
-              disabled={!selectedRowId || importing}
-              onClick={() => selectedRowId && handleImportCodexSession(selectedRowId)}
-              className="shrink-0 gap-1.5"
-            >
-              <ArrowLeftRight className="h-3.5 w-3.5" />
-              {importing ? "Importing…" : "Import to Claude"}
-            </Button>
-          </div>
-        ) : null}
-
         {matrixColumns.length === 0 ? (
           <div className="flex flex-1 items-center justify-center text-muted-foreground">
             <p className="font-sans text-sm">
@@ -1183,6 +1169,9 @@ export default function ContentLibraryPage() {
         onClose={() => setSelection(null)}
         onLaunch={handleLaunch}
         resolveInstallName={resolveInstallName}
+        onImportCodexSession={handleImportCodexSession}
+        onExportClaudeSession={handleExportClaudeSession}
+        transferBusy={importing}
       />
 
       {/* Floating pending bar */}
