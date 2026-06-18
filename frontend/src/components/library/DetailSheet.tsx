@@ -504,11 +504,28 @@ function RowDetail({
   onContentChanged?: () => void;
 }) {
   const [openCell, setOpenCell] = useState<LibraryCell | null>(null);
+  const [importing, setImporting] = useState<string | null>(null);
+  const [importErr, setImportErr] = useState<string | null>(null);
   const showSessions =
     ((kind === "code_history" || kind === "cowork_sessions") &&
       row.id !== "__workspace__") ||
     ((kind === "codex_sessions" || kind === "claude_sessions") &&
       row.id !== "__all_sessions__");
+  const isMemoryKind =
+    kind === "memory" || kind === "codex_memory" || kind === "memory_cross";
+  const handleImportMemory = async (src: LibraryCell, dst: LibraryCell) => {
+    const key = `${src.install_id}->${dst.install_id}`;
+    setImporting(key);
+    setImportErr(null);
+    try {
+      await api.importMemoryFile(src.data_dir, dst.data_dir);
+      onContentChanged?.();
+    } catch (e) {
+      setImportErr(String(e));
+    } finally {
+      setImporting(null);
+    }
+  };
   const openTarget = openCell ? contentTargetFor(kind, openCell, row.id) : null;
   return (
     <div className="sheet-slide flex h-full flex-col">
@@ -550,6 +567,12 @@ function RowDetail({
             onChanged={() => onContentChanged?.()}
           />
         ) : (
+        <>
+        {importErr ? (
+          <div className="mb-2 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-1.5 font-sans text-[11px] text-destructive">
+            {importErr}
+          </div>
+        ) : null}
         <ul className="space-y-1.5">
           {row.cells.map((cell) => {
             const editable = contentTargetFor(kind, cell, row.id) !== null;
@@ -604,6 +627,37 @@ function RowDetail({
                   onContentChanged={onContentChanged}
                 />
               ) : null}
+              {isMemoryKind && cell.present ? (
+                <div
+                  className="mt-1.5 flex flex-wrap items-center gap-1.5"
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  <span className="font-sans text-[10px] text-muted-foreground">
+                    Import to
+                  </span>
+                  {row.cells
+                    .filter(
+                      (c) =>
+                        c.install_id !== cell.install_id &&
+                        c.data_dir !== cell.data_dir,
+                    )
+                    .map((other) => {
+                      const key = `${cell.install_id}->${other.install_id}`;
+                      return (
+                        <button
+                          key={other.install_id}
+                          type="button"
+                          disabled={importing !== null}
+                          onClick={() => handleImportMemory(cell, other)}
+                          className="rounded border border-border px-1.5 py-0.5 font-sans text-[10px] text-foreground/80 transition-colors hover:bg-muted disabled:opacity-50"
+                        >
+                          {importing === key ? "…" : "→"}{" "}
+                          {resolveInstallName(other.install_id) ?? other.install_name}
+                        </button>
+                      );
+                    })}
+                </div>
+              ) : null}
               {editable ? (
                 <div className="mt-1 font-sans text-[10px] text-primary/80">
                   {cell.present ? "view · edit ›" : "create ›"}
@@ -613,6 +667,7 @@ function RowDetail({
             );
           })}
         </ul>
+        </>
         )}
       </div>
     </div>

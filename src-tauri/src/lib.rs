@@ -458,6 +458,35 @@ pub fn write_text_file(path: String, content: String) -> Result<(), String> {
     fs::write(&p, content).map_err(|e| format!("Write {}: {e}", p.display()))
 }
 
+/// Copy memory CONTENT from one file into another — account→account
+/// (CLAUDE.md→CLAUDE.md) or cross-tool (CLAUDE.md↔AGENTS.md), either direction.
+/// A plain copy: the target becomes an independent file (not a symlink), so the
+/// two memories can diverge afterward. Both ends are guarded memory paths.
+pub fn import_memory_file(source: String, target: String) -> Result<(), String> {
+    let src = guarded_file_path(&source)?;
+    let content = match fs::read_to_string(&src) {
+        Ok(s) => s,
+        Err(e) if e.kind() == ErrorKind::NotFound => {
+            return Err(format!("Nothing to import — {} doesn't exist.", src.display()))
+        }
+        Err(e) => return Err(format!("Read {}: {e}", src.display())),
+    };
+    let dst = guarded_file_path(&target)?;
+    if fs::symlink_metadata(&dst)
+        .map(|m| m.file_type().is_symlink())
+        .unwrap_or(false)
+    {
+        return Err(
+            "Target is shared (a symlink) — un-share it first so the import stays independent."
+                .to_string(),
+        );
+    }
+    if let Some(parent) = dst.parent() {
+        fs::create_dir_all(parent).map_err(|e| format!("Create {}: {e}", parent.display()))?;
+    }
+    fs::write(&dst, content).map_err(|e| format!("Write {}: {e}", dst.display()))
+}
+
 /// Delete a content file or folder (a skill dir, a session file, a memory file).
 /// remove_path unlinks a symlink rather than touching its target.
 pub fn delete_content_path(path: String) -> Result<(), String> {
@@ -1972,19 +2001,34 @@ fn code_install_from_default() -> Result<Option<CodeInstall>, String> {
 }
 
 fn code_install_from_profile(profile: &RegistryProfile) -> Option<CodeInstall> {
-    // The CLI persists Code profiles as { configDir, aliasName }. We tolerate
-    // missing fields rather than refusing to load a malformed registry.
-    let code = profile.code.as_ref()?;
-    let config_dir = code
-        .get("configDir")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string())?;
-    let alias_name = code
-        .get("aliasName")
+    // The CLI persists Code profiles as { configDir, aliasName }. A profile may
+    // have a Desktop/Codex side but NO Claude Code dir yet (code: null) — we
+    // still surface it as a column at the conventional ~/.claude-<slug> path so
+    // the user sees ALL their real profiles. The dir is created on first
+    // share/edit into it; until then its content simply reads as absent.
+    let explicit = profile
+        .code
+        .as_ref()
+        .and_then(|c| c.get("configDir"))
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
+    let alias_name = profile
+        .code
+        .as_ref()
+        .and_then(|c| c.get("aliasName"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    let clean = sanitize_profile_name(&profile.name);
+    let config_dir = match explicit {
+        Some(dir) => dir,
+        None => home_dir()
+            .ok()?
+            .join(format!(".claude-{clean}"))
+            .to_string_lossy()
+            .to_string(),
+    };
     Some(CodeInstall {
-        id: format!("profile:{}", profile.name),
+        id: format!("profile:{clean}"),
         name: profile.name.clone(),
         kind: "profile".to_string(),
         config_dir,
@@ -2177,6 +2221,18 @@ pub fn list_code_installs() -> Result<Vec<CodeInstall>, String> {
     Ok(installs)
 }
 
+/// A Claude Code config dir is "real" (vs a blank leftover) if it has recorded
+/// at least one project or some command history.
+fn code_dir_has_content(dir: &Path) -> bool {
+    let has_projects = fs::read_dir(dir.join("projects"))
+        .map(|mut r| r.next().is_some())
+        .unwrap_or(false);
+    let has_history = fs::metadata(dir.join("history.jsonl"))
+        .map(|m| m.len() > 0)
+        .unwrap_or(false);
+    has_projects || has_history
+}
+
 /// Find `~/.claude-<name>` directories on disk that look like real Claude Code
 /// config dirs and aren't already covered by the default/registry installs.
 fn discover_disk_code_installs(existing: &[CodeInstall]) -> Vec<CodeInstall> {
@@ -2214,6 +2270,12 @@ fn discover_disk_code_installs(existing: &[CodeInstall]) -> Vec<CodeInstall> {
             && !p.join("sessions").is_dir()
             && !p.join("projects").is_dir()
         {
+            continue;
+        }
+        // Skip BLANK config dirs (no sessions ever recorded) — these are usually
+        // leftovers from deleted profiles and would clutter the matrix with empty
+        // columns. A real account has at least one project or some history.
+        if !code_dir_has_content(&p) {
             continue;
         }
         let canon = fs::canonicalize(&p).unwrap_or_else(|_| p.clone());
@@ -7854,6 +7916,11 @@ mod commands {
     }
 
     #[tauri::command]
+    pub fn import_memory_file(source: String, target: String) -> Result<(), String> {
+        super::import_memory_file(source, target)
+    }
+
+    #[tauri::command]
     pub fn read_mcp_server(config_path: String, server: String) -> Result<String, String> {
         super::read_mcp_server(config_path, server)
     }
@@ -8019,6 +8086,7 @@ pub fn run() {
             commands::read_text_file,
             commands::write_text_file,
             commands::delete_content_path,
+            commands::import_memory_file,
             commands::read_mcp_server,
             commands::write_mcp_server,
             commands::delete_mcp_server,

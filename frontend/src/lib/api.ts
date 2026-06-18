@@ -286,6 +286,9 @@ export const api = {
   deleteContentPath(path: string): Promise<void> {
     return invoke("delete_content_path", { path });
   },
+  importMemoryFile(source: string, target: string): Promise<void> {
+    return invoke("import_memory_file", { source, target });
+  },
   readMcpServer(configPath: string, server: string): Promise<string> {
     return invoke("read_mcp_server", { configPath, server });
   },
