@@ -362,29 +362,69 @@ fn remove_data_dir(path: &Path) -> Result<(), String> {
 /// outside). Bounds all content editing to profile dirs; paths come from trusted
 /// matrix cell.data_dir values, this is defense-in-depth.
 fn guarded_file_path(raw: &str) -> Result<PathBuf, String> {
-    let home = home_dir()?;
+    let home0 = home_dir()?;
+    let home = fs::canonicalize(&home0).unwrap_or(home0);
     let p = PathBuf::from(raw);
     let parent = p.parent().ok_or_else(|| "Path has no parent directory.".to_string())?;
     let fname = p.file_name().ok_or_else(|| "Path has no file name.".to_string())?;
     let cparent = parent
         .canonicalize()
         .map_err(|e| format!("Resolve {}: {e}", parent.display()))?;
-    // Must live under a MANAGED profile root — the first component below $HOME
-    // begins with ".claude" or ".codex". Bounds editing to our own dirs so a bad
-    // path can never reach ~/.ssh, ~/.aws, ~/Library, etc.
-    let first = cparent
-        .strip_prefix(&home)
+    let full = cparent.join(fname);
+
+    // Which managed root (if any) is this under? First component below $HOME
+    // begins with ".claude" / ".codex".
+    let rel = cparent.strip_prefix(&home);
+    let first = rel
+        .as_ref()
         .ok()
-        .and_then(|rel| rel.components().next())
+        .and_then(|r| r.components().next())
         .and_then(|c| c.as_os_str().to_str())
         .unwrap_or("");
-    if !(first.starts_with(".claude") || first.starts_with(".codex")) {
-        return Err(format!(
-            "Refusing to touch {} — not inside a Claude/Codex profile directory.",
-            p.display()
-        ));
+    let in_managed_root = first.starts_with(".claude") || first.starts_with(".codex");
+
+    // Inside our own profile dirs: broad allowance — symlinks are fine here
+    // because that's exactly how content sharing works (a shared file IS a link).
+    if in_managed_root {
+        return Ok(full);
     }
-    Ok(cparent.join(fname))
+
+    // Outside the managed roots: the ONLY thing we'll touch is a memory file
+    // (CLAUDE.md / AGENTS.md) at a project root — they commonly live in repos, not
+    // in ~/.claude. Tightly gated: must be under $HOME, must NOT sit in a hidden
+    // dot-directory (keeps ~/.ssh/CLAUDE.md etc. out), and the file itself must
+    // not be a symlink (no CLAUDE.md → ~/.ssh/id_rsa read/write/delete trick).
+    let fname_str = fname.to_str().unwrap_or("");
+    let is_memory_file = matches!(
+        fname_str,
+        "CLAUDE.md" | "CLAUDE.local.md" | "AGENTS.md" | "AGENTS.local.md"
+    );
+    if is_memory_file {
+        let rel = rel.map_err(|_| {
+            format!("Refusing to touch {} — outside your home directory.", p.display())
+        })?;
+        if rel
+            .components()
+            .any(|c| c.as_os_str().to_str().map_or(true, |s| s.starts_with('.')))
+        {
+            return Err(format!(
+                "Refusing to touch {} — inside a hidden directory.",
+                p.display()
+            ));
+        }
+        if fs::symlink_metadata(&full)
+            .map(|m| m.file_type().is_symlink())
+            .unwrap_or(false)
+        {
+            return Err(format!("Refusing to follow symlink {}.", full.display()));
+        }
+        return Ok(full);
+    }
+
+    Err(format!(
+        "Refusing to touch {} — not inside a Claude/Codex profile directory.",
+        p.display()
+    ))
 }
 
 /// Read a content file (memory / SKILL.md / etc). Missing → "" (so the editor
@@ -2129,7 +2169,68 @@ pub fn list_code_installs() -> Result<Vec<CodeInstall>, String> {
             installs.push(install);
         }
     }
+    // Auto-discover ~/.claude-<name> config dirs that exist on disk but aren't in
+    // the registry (e.g. accounts the user runs via CLAUDE_CONFIG_DIR by hand).
+    // Without this, those real accounts never appear as matrix columns, so the
+    // grid collapses to a single column and sharing has nothing to share between.
+    installs.extend(discover_disk_code_installs(&installs));
     Ok(installs)
+}
+
+/// Find `~/.claude-<name>` directories on disk that look like real Claude Code
+/// config dirs and aren't already covered by the default/registry installs.
+fn discover_disk_code_installs(existing: &[CodeInstall]) -> Vec<CodeInstall> {
+    let home = match home_dir() {
+        Ok(h) => h,
+        Err(_) => return Vec::new(),
+    };
+    let existing_dirs: std::collections::HashSet<PathBuf> = existing
+        .iter()
+        .map(|i| {
+            let p = PathBuf::from(&i.config_dir);
+            fs::canonicalize(&p).unwrap_or(p)
+        })
+        .collect();
+    let mut out = Vec::new();
+    let Ok(rd) = fs::read_dir(&home) else {
+        return out;
+    };
+    for entry in rd.flatten() {
+        let p = entry.path();
+        if !p.is_dir() {
+            continue;
+        }
+        let Some(name) = p.file_name().and_then(|s| s.to_str()) else {
+            continue;
+        };
+        let Some(suffix) = name.strip_prefix(".claude-") else {
+            continue;
+        };
+        if suffix.is_empty() {
+            continue;
+        }
+        // Must look like a real Claude Code config dir, not some unrelated folder.
+        if !p.join("settings.json").is_file()
+            && !p.join("sessions").is_dir()
+            && !p.join("projects").is_dir()
+        {
+            continue;
+        }
+        let canon = fs::canonicalize(&p).unwrap_or_else(|_| p.clone());
+        if existing_dirs.contains(&canon) {
+            continue;
+        }
+        out.push(CodeInstall {
+            id: format!("disk:{suffix}"),
+            name: suffix.to_string(),
+            kind: "profile".to_string(),
+            config_dir: p.to_string_lossy().to_string(),
+            alias_name: None,
+            managed: false,
+        });
+    }
+    out.sort_by(|a, b| a.name.cmp(&b.name));
+    out
 }
 
 // ===========================================================================
@@ -6200,9 +6301,128 @@ fn apply_memory_share(change: &LibraryCellChange) -> Result<bool, String> {
     apply_memory_share_in(&memory_columns()?, change)
 }
 
-/// Within-Claude memory (Claude tab): CLAUDE.md across Claude accounts.
+/// Read the real working directory recorded inside a project's newest session
+/// transcript. The `~/.claude/projects/<id>` directory name is a LOSSY encoding
+/// of the cwd (both `/` and `.` collapse to `-`), so it can't be decoded back —
+/// the authoritative cwd lives in the `cwd` field of the JSONL events.
+fn project_cwd_from_sessions(project_dir: &Path) -> Option<String> {
+    let mut newest: Option<(std::time::SystemTime, PathBuf)> = None;
+    for e in fs::read_dir(project_dir).ok()?.flatten() {
+        let p = e.path();
+        if p.extension().and_then(|s| s.to_str()) != Some("jsonl") {
+            continue;
+        }
+        let Some(m) = p.metadata().ok().and_then(|md| md.modified().ok()) else {
+            continue;
+        };
+        if newest.as_ref().map_or(true, |(t, _)| m > *t) {
+            newest = Some((m, p));
+        }
+    }
+    let (_, file) = newest?;
+    let f = fs::File::open(&file).ok()?;
+    let mut reader = std::io::BufReader::new(f);
+    let mut line = String::new();
+    // The cwd is recorded on the first events; scan a few lines, not the whole
+    // (potentially multi-MB) transcript.
+    for _ in 0..8 {
+        line.clear();
+        if std::io::BufRead::read_line(&mut reader, &mut line).ok()? == 0 {
+            break;
+        }
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(line.trim()) {
+            if let Some(cwd) = v.get("cwd").and_then(|c| c.as_str()) {
+                if !cwd.is_empty() {
+                    return Some(cwd.to_string());
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Project-level memory: a `CLAUDE.md` at a project's working directory (the
+/// common case — most CLAUDE.md live in repos, not in `~/.claude`). One row per
+/// project that actually has a CLAUDE.md, a cell present under every account that
+/// has worked in that project. Browse/edit only (the file is shared by path, so
+/// there's nothing to symlink-share).
+fn claude_project_memory_rows() -> Vec<LibraryRow> {
+    let installs = match list_code_installs() {
+        Ok(i) => i,
+        Err(_) => return Vec::new(),
+    };
+    let mut by_cwd: std::collections::BTreeMap<String, std::collections::HashSet<String>> =
+        std::collections::BTreeMap::new();
+    for inst in &installs {
+        let projects = PathBuf::from(&inst.config_dir).join("projects");
+        let Ok(rd) = fs::read_dir(&projects) else {
+            continue;
+        };
+        for e in rd.flatten() {
+            let p = e.path();
+            if !p.is_dir() {
+                continue;
+            }
+            if let Some(cwd) = project_cwd_from_sessions(&p) {
+                // Skip ephemeral agent worktrees — their CLAUDE.md just mirrors
+                // the parent repo's, so they'd flood the list with near-dupes.
+                if cwd.contains("/.claude/worktrees/") {
+                    continue;
+                }
+                by_cwd.entry(cwd).or_default().insert(inst.id.clone());
+            }
+        }
+    }
+    let mut rows = Vec::new();
+    for (cwd, ids) in by_cwd {
+        let memfile = PathBuf::from(&cwd).join(MEMORY_CLAUDE_FILE);
+        if !memfile.is_file() {
+            continue; // only surface projects that actually have memory
+        }
+        let label = Path::new(&cwd)
+            .file_name()
+            .and_then(|s| s.to_str())
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| cwd.clone());
+        let memfile_str = memfile.to_string_lossy().to_string();
+        let cells = installs
+            .iter()
+            .map(|inst| {
+                let present = ids.contains(&inst.id);
+                LibraryCell {
+                    install_id: inst.id.clone(),
+                    install_name: inst.name.clone(),
+                    data_dir: memfile_str.clone(),
+                    kind: inst.kind.clone(),
+                    state: if present { "independent" } else { "absent" }.to_string(),
+                    present,
+                    detail: Some("CLAUDE.md".to_string()),
+                    digest: None,
+                    link_target_digest: None,
+                }
+            })
+            .collect();
+        rows.push(LibraryRow {
+            id: format!("projmem:{cwd}"),
+            label,
+            description: Some(cwd.clone()),
+            cells,
+            interactive: false,
+            group: Some("PROJECT MEMORY".to_string()),
+        });
+    }
+    rows
+}
+
+/// Within-Claude memory (Claude tab): the global `~/.claude/CLAUDE.md` per
+/// account, plus every project-level `CLAUDE.md` the accounts have touched.
 pub fn list_claude_memory_library() -> Result<Vec<LibraryRow>, String> {
-    Ok(memory_matrix_rows(&claude_memory_columns()?))
+    let mut rows = memory_matrix_rows(&claude_memory_columns()?);
+    if let Some(first) = rows.first_mut() {
+        first.group = Some("GLOBAL · ~/.claude".to_string());
+    }
+    rows.extend(claude_project_memory_rows());
+    Ok(rows)
 }
 fn apply_claude_memory_share(change: &LibraryCellChange) -> Result<bool, String> {
     apply_memory_share_in(&claude_memory_columns()?, change)
@@ -9200,6 +9420,20 @@ mod tests {
         assert!(guarded_file_path(&ssh.join("id_rsa").to_string_lossy()).is_err());
         // Refuse a file directly in $HOME.
         assert!(guarded_file_path(&home.join("secret.txt").to_string_lossy()).is_err());
+
+        // Project-level memory: a CLAUDE.md at a normal (non-hidden) project root
+        // IS allowed (that's where most CLAUDE.md actually live).
+        let proj = home.join("claudex_guard_test_proj");
+        fs::create_dir_all(&proj).ok();
+        assert!(guarded_file_path(&proj.join("CLAUDE.md").to_string_lossy()).is_ok());
+        // …but the memory carve-out must NOT reach into hidden dot-dirs.
+        assert!(guarded_file_path(&ssh.join("CLAUDE.md").to_string_lossy()).is_err());
+        // …and a memory file that is itself a symlink is refused (no
+        // CLAUDE.md → ~/.ssh/id_rsa exfiltration).
+        let link = proj.join("AGENTS.md");
+        std::os::unix::fs::symlink(ssh.join("id_rsa"), &link).ok();
+        assert!(guarded_file_path(&link.to_string_lossy()).is_err());
+        fs::remove_dir_all(&proj).ok();
     }
 
     #[test]
