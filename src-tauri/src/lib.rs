@@ -5360,7 +5360,26 @@ fn apply_codex_sessions_share(change: &LibraryCellChange) -> Result<bool, String
         share_codex_sessions(&source_home, &target_home)
     } else {
         // Resolve the real link target from the symlink itself — no guessing.
-        make_codex_sessions_independent(&target_home)
+        let target = target_home.join(CODEX_SESSIONS_DIR);
+        let target_is_link = fs::symlink_metadata(&target)
+            .map(|m| m.file_type().is_symlink())
+            .unwrap_or(false);
+        if target_is_link {
+            make_codex_sessions_independent(&target_home)
+        } else {
+            // Target is the REAL source — detach every sibling linking into it so
+            // un-share works from either cell (both render "shared").
+            let mut changed = false;
+            for c in &cols {
+                if c.home != target_home
+                    && path_points_to(&c.home.join(CODEX_SESSIONS_DIR), &target)
+                    && make_codex_sessions_independent(&c.home)?
+                {
+                    changed = true;
+                }
+            }
+            Ok(changed)
+        }
     }
 }
 
@@ -5577,7 +5596,29 @@ fn apply_claude_sessions_share(change: &LibraryCellChange) -> Result<bool, Strin
         };
         share_claude_sessions(&source_config, &target_config)
     } else {
-        make_dir_symlink_independent(&target_config.join(CODE_PROJECTS_DIR))
+        let target = target_config.join(CODE_PROJECTS_DIR);
+        let target_is_link = fs::symlink_metadata(&target)
+            .map(|m| m.file_type().is_symlink())
+            .unwrap_or(false);
+        if target_is_link {
+            make_dir_symlink_independent(&target)
+        } else {
+            // Target is the REAL source dir that others link into. Both the
+            // source and its linkers render "shared", so the user can't tell
+            // which side holds the link — make un-sharing work from EITHER cell
+            // by detaching every sibling that points at this source.
+            let mut changed = false;
+            for (_, _, d) in &cols {
+                let other = d.join(CODE_PROJECTS_DIR);
+                if other != target
+                    && path_points_to(&other, &target)
+                    && make_dir_symlink_independent(&other)?
+                {
+                    changed = true;
+                }
+            }
+            Ok(changed)
+        }
     }
 }
 
@@ -9601,6 +9642,69 @@ mod tests {
         assert_eq!(def_after.state, "shared", "Default reads shared after the toggle");
 
         // restore env for any sibling tests
+        match prev_home {
+            Some(v) => std::env::set_var("HOME", v),
+            None => std::env::remove_var("HOME"),
+        }
+        match prev_xdg {
+            Some(v) => std::env::set_var("XDG_CONFIG_HOME", v),
+            None => std::env::remove_var("XDG_CONFIG_HOME"),
+        }
+    }
+
+    /// END-TO-END: un-sharing whole sessions by clicking the SOURCE cell (the real
+    /// dir others link into) must actually detach the linkers — previously a
+    /// silent no-op that left both cells stuck on "shared".
+    #[test]
+    fn e2e_unshare_sessions_from_source_cell_detaches_linkers() {
+        let _env = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let home = tempfile::tempdir().unwrap();
+        let prev_home = std::env::var_os("HOME");
+        let prev_xdg = std::env::var_os("XDG_CONFIG_HOME");
+        std::env::set_var("HOME", home.path());
+        std::env::set_var("XDG_CONFIG_HOME", home.path().join(".config"));
+
+        let proj = home.path().join(".claude").join("projects").join("-Users-x-demo");
+        fs::create_dir_all(&proj).unwrap();
+        fs::write(proj.join("s1.jsonl"), "{\"cwd\":\"/Users/x/demo\"}\n").unwrap();
+        let reg = home.path().join(".config").join("claude-multiprofile");
+        fs::create_dir_all(&reg).unwrap();
+        fs::write(
+            reg.join("profiles.json"),
+            r#"{"version":1,"profiles":[{"name":"judy","type":"both","desktop":null,"code":null,"codex":null,"createdAt":"2026-01-01T00:00:00Z"}]}"#,
+        )
+        .unwrap();
+
+        let toggle = |target: &str, wants: bool| {
+            apply_library_changes(
+                "claude_sessions".to_string(),
+                vec![LibraryCellChange {
+                    row_id: CODEX_ALL_SESSIONS_ID.to_string(),
+                    target_install_id: target.to_string(),
+                    wants,
+                    source_install_id: None,
+                }],
+            )
+            .unwrap();
+        };
+
+        toggle("profile:judy", true); // share default -> judy
+        let judy_link = home.path().join(".claude-judy").join("projects");
+        assert!(fs::symlink_metadata(&judy_link).unwrap().file_type().is_symlink());
+
+        toggle("default", false); // un-share from the SOURCE cell
+
+        let md = fs::symlink_metadata(&judy_link).unwrap();
+        assert!(!md.file_type().is_symlink(), "un-share from source must detach the linker");
+        assert!(
+            judy_link.join("-Users-x-demo").join("s1.jsonl").exists(),
+            "detached dir keeps the sessions content"
+        );
+        let after = list_claude_sessions_library().unwrap();
+        let all = after.iter().find(|r| r.id == CODEX_ALL_SESSIONS_ID).unwrap();
+        assert_eq!(all.cells.iter().find(|c| c.install_id == "profile:judy").unwrap().state, "independent");
+        assert_eq!(all.cells.iter().find(|c| c.install_id == "default").unwrap().state, "independent");
+
         match prev_home {
             Some(v) => std::env::set_var("HOME", v),
             None => std::env::remove_var("HOME"),
