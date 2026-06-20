@@ -5282,6 +5282,12 @@ fn share_codex_sessions(source_home: &Path, target_home: &Path) -> Result<bool, 
     if path_points_to(&target, &source) {
         return Ok(false); // already shared
     }
+    // Ensure the target CODEX_HOME exists first, else symlink(2) fails with
+    // ENOENT and the share silently never happens (same class of bug as
+    // share_claude_sessions). Non-destructive: only the parent, never the
+    // sessions/ link target.
+    fs::create_dir_all(target_home)
+        .map_err(|e| format!("Create {}: {e}", target_home.display()))?;
     // Back up any real target sessions dir, then symlink.
     if fs::symlink_metadata(&target).is_ok() {
         backup_existing_path(&target, target_home, CODEX_SESSIONS_DIR)?;
