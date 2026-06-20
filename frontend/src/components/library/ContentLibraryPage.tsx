@@ -1306,8 +1306,7 @@ export default function ContentLibraryPage() {
                 only={["memory_cross", "skills", "mcp_cross"]}
                 heading="Cross-tool sharing"
               />
-              <p className="mt-1 flex items-start gap-1.5 px-3 font-sans text-[10px] leading-snug text-muted-foreground/70">
-                <span className="mt-0.5 h-2 w-2 shrink-0 rounded-[2px] bg-foreground" />
+              <p className="mt-1 px-3 font-sans text-[10px] leading-snug text-muted-foreground/70">
                 Skills (SKILL.md) link live between Claude and Codex. MCP servers
                 copy across the JSON↔TOML boundary.
               </p>
@@ -1341,9 +1340,7 @@ export default function ContentLibraryPage() {
 
         {KIND_SCOPE_CAPTION[activeKind] ? (
           <div className="flex items-center gap-2 rounded-md border border-border/60 bg-muted/30 px-3 py-1.5 font-sans text-[11px] text-muted-foreground">
-            {activeKind === "skills" || activeKind === "mcp_cross" || activeKind === "memory_cross" ? (
-              <span className="h-2 w-2 shrink-0 rounded-[2px] bg-foreground" />
-            ) : activeTab === "codex" ? (
+            {activeKind !== "skills" && activeKind !== "mcp_cross" && activeKind !== "memory_cross" && activeTab === "codex" ? (
               <CodexMark className="h-3 w-3 shrink-0 text-[#4366F2]" />
             ) : null}
             {KIND_SCOPE_CAPTION[activeKind]}

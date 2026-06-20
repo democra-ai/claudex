@@ -194,12 +194,6 @@ export function KindNav({ value, onChange, counts, only, heading = "Content" }: 
               <span className="flex flex-col leading-tight">
                 <span className="flex items-center gap-1.5 font-sans text-[13px]">
                   {kind.label}
-                  {kind.crossTool ? (
-                    <span
-                      className="h-2 w-2 shrink-0 rounded-[2px] bg-foreground"
-                      title="Shares across Claude and Codex"
-                    />
-                  ) : null}
                 </span>
                 <span className="font-sans text-[10px] text-muted-foreground/70">
                   {kind.blurb}

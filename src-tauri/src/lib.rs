@@ -5528,8 +5528,16 @@ fn share_claude_sessions(source_config: &Path, target_config: &Path) -> Result<b
         return Err("Source account has no projects/ dir yet.".to_string());
     }
     if path_points_to(&target, &source) {
-        return Ok(false);
+        return Ok(false); // already shared — idempotent
     }
+    // Ensure the TARGET ACCOUNT dir (the symlink's parent, e.g. ~/.claude-judy)
+    // exists first, or symlink(2) fails with ENOENT and the share silently never
+    // happens — exactly why a derived-but-absent account (JUDY) read "independent"
+    // after the user thought they'd shared. Every other symlink-apply path already
+    // does this. create_dir_all is a no-op when present and only makes the PARENT,
+    // never the projects/ link target — so a real projects dir is never clobbered.
+    fs::create_dir_all(target_config)
+        .map_err(|e| format!("Create {}: {e}", target_config.display()))?;
     if fs::symlink_metadata(&target).is_ok() {
         backup_existing_path(&target, target_config, CODE_PROJECTS_DIR)?;
     }
@@ -9484,6 +9492,39 @@ mod tests {
         assert_eq!(s[2], "shared", "symlink C (transitive group)");
         assert_eq!(s[3], "independent", "unrelated real dir");
         assert_eq!(s[4], "absent");
+    }
+
+    #[test]
+    fn share_claude_sessions_creates_absent_target_then_reads_shared() {
+        // Regression: sharing the whole sessions dir into a derived-but-absent
+        // account (the JUDY case, ~/.claude-judy) must create the parent dir,
+        // create the symlink, and afterward read "shared" on both sides — not
+        // silently fail with ENOENT and leave the cell "independent".
+        let src = tempfile::tempdir().unwrap();
+        let src_projects = src.path().join("projects");
+        fs::create_dir_all(&src_projects).unwrap();
+        fs::write(src_projects.join("a.jsonl"), "{}\n").unwrap();
+
+        let base = tempfile::tempdir().unwrap();
+        let target_config = base.path().join(".claude-judy"); // does NOT exist yet
+        assert!(!target_config.exists());
+
+        let created = share_claude_sessions(src.path(), &target_config).unwrap();
+        assert!(created, "share must report it created the link");
+
+        let target_projects = target_config.join("projects");
+        let md = fs::symlink_metadata(&target_projects).unwrap();
+        assert!(md.file_type().is_symlink(), "target projects/ must be a symlink");
+        assert!(path_points_to(&target_projects, &src_projects));
+
+        let states = symlink_share_states(
+            &[src_projects.clone(), target_projects.clone()],
+            &[true, true],
+        );
+        assert_eq!(states, vec!["shared", "shared"], "both sides read shared");
+
+        // Idempotent re-share is a no-op (already linked).
+        assert!(!share_claude_sessions(src.path(), &target_config).unwrap());
     }
 
     #[test]
