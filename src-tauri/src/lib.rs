@@ -8429,6 +8429,11 @@ mod tests {
     use super::*;
     use std::fs;
 
+    /// Serializes tests that read or mutate the process-global HOME env, so the
+    /// e2e share test (which points HOME at a tempdir) can't race the
+    /// home_dir()-reading tests under parallel `cargo test`.
+    static ENV_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn sanitize_profile_name_matches_cli_rules() {
         assert_eq!(sanitize_profile_name("  WORK  "), "work");
@@ -9527,6 +9532,79 @@ mod tests {
         assert!(!share_claude_sessions(src.path(), &target_config).unwrap());
     }
 
+    /// END-TO-END: the EXACT path the GUI runs — toggle whole-sessions share onto
+    /// a derived-but-absent account (JUDY), through the real apply command, then
+    /// re-read the library and assert BOTH cells report "shared". Proves the
+    /// control + detection chain works on the JUDY scenario, not just the helper.
+    #[test]
+    fn e2e_share_whole_sessions_onto_judy_reads_shared() {
+        let _env = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let home = tempfile::tempdir().unwrap();
+        let prev_home = std::env::var_os("HOME");
+        let prev_xdg = std::env::var_os("XDG_CONFIG_HOME");
+        std::env::set_var("HOME", home.path());
+        std::env::set_var("XDG_CONFIG_HOME", home.path().join(".config"));
+
+        // ~/.claude/projects/<proj>/<session>.jsonl — Default has real sessions.
+        let proj = home.path().join(".claude").join("projects").join("-Users-x-demo");
+        fs::create_dir_all(&proj).unwrap();
+        fs::write(
+            proj.join("s1.jsonl"),
+            "{\"type\":\"user\",\"cwd\":\"/Users/x/demo\",\"message\":{\"role\":\"user\",\"content\":\"hi\"}}\n",
+        )
+        .unwrap();
+        // Registry with a JUDY profile that has NO code dir (code:null) — the
+        // exact shape of the user's profiles.json.
+        let reg = home.path().join(".config").join("claude-multiprofile");
+        fs::create_dir_all(&reg).unwrap();
+        fs::write(
+            reg.join("profiles.json"),
+            r#"{"version":1,"profiles":[{"name":"judy","type":"both","desktop":null,"code":null,"codex":null,"createdAt":"2026-01-01T00:00:00Z"}]}"#,
+        )
+        .unwrap();
+
+        // BEFORE: JUDY's whole-sessions cell is absent (nothing shared).
+        let before = list_claude_sessions_library().unwrap();
+        let all_before = before.iter().find(|r| r.id == CODEX_ALL_SESSIONS_ID).unwrap();
+        let judy_before = all_before.cells.iter().find(|c| c.install_id == "profile:judy").unwrap();
+        assert_eq!(judy_before.state, "absent", "JUDY starts unshared");
+
+        // ACT: the real GUI apply — toggle "All Claude sessions" share onto JUDY.
+        apply_library_changes(
+            "claude_sessions".to_string(),
+            vec![LibraryCellChange {
+                row_id: CODEX_ALL_SESSIONS_ID.to_string(),
+                target_install_id: "profile:judy".to_string(),
+                wants: true,
+                source_install_id: None,
+            }],
+        )
+        .unwrap();
+
+        // AFTER: ~/.claude-judy/projects is a live symlink AND both cells read shared.
+        let judy_link = home.path().join(".claude-judy").join("projects");
+        assert!(
+            fs::symlink_metadata(&judy_link).unwrap().file_type().is_symlink(),
+            "apply must have created the projects symlink"
+        );
+        let after = list_claude_sessions_library().unwrap();
+        let all_after = after.iter().find(|r| r.id == CODEX_ALL_SESSIONS_ID).unwrap();
+        let judy_after = all_after.cells.iter().find(|c| c.install_id == "profile:judy").unwrap();
+        let def_after = all_after.cells.iter().find(|c| c.install_id == "default").unwrap();
+        assert_eq!(judy_after.state, "shared", "JUDY reads shared after the toggle");
+        assert_eq!(def_after.state, "shared", "Default reads shared after the toggle");
+
+        // restore env for any sibling tests
+        match prev_home {
+            Some(v) => std::env::set_var("HOME", v),
+            None => std::env::remove_var("HOME"),
+        }
+        match prev_xdg {
+            Some(v) => std::env::set_var("XDG_CONFIG_HOME", v),
+            None => std::env::remove_var("XDG_CONFIG_HOME"),
+        }
+    }
+
     #[test]
     fn compute_row_states_copy_detects_diverged_when_digests_disagree() {
         let mut row = LibraryRow {
@@ -9794,6 +9872,7 @@ mod tests {
     fn remove_data_dir_refuses_dangerous_paths() {
         // Refuses home, root, and anything not safely under home — without
         // deleting anything (these all error before any removal).
+        let _env = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         let home = home_dir().unwrap();
         assert!(remove_data_dir(&home).is_err(), "home refused");
         assert!(remove_data_dir(Path::new("/")).is_err(), "root refused");
@@ -9826,6 +9905,7 @@ mod tests {
 
     #[test]
     fn guarded_file_path_confines_to_claude_codex_roots() {
+        let _env = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         let home = home_dir().unwrap();
         // A real managed root must exist for canonicalize to succeed; create one.
         let claude = home.join(".claude");
