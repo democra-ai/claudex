@@ -5185,36 +5185,58 @@ pub fn list_claude_sessions_for_project(
 ) -> Result<Vec<LocalSession>, String> {
     let config = claude_config_for_column(&install_id)?
         .ok_or_else(|| format!("Unknown Claude account: {install_id}"))?;
-    let dir = config.join(CODE_PROJECTS_DIR).join(&project_id);
+    let projects_root = config.join(CODE_PROJECTS_DIR);
+    // Grouped project rows carry a root cwd (absolute path) as their id — gather
+    // sessions from every dir under that root (the project + all its worktrees).
+    // A non-absolute id is a legacy single dir name.
+    let dirs: Vec<PathBuf> = if project_id.starts_with('/') {
+        fs::read_dir(&projects_root)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.is_dir())
+            .filter(|p| {
+                project_cwd_from_sessions(p)
+                    .map(|c| worktree_root(&c) == project_id)
+                    .unwrap_or(false)
+            })
+            .collect()
+    } else {
+        vec![projects_root.join(&project_id)]
+    };
     let mut out = Vec::new();
-    if let Ok(rd) = fs::read_dir(&dir) {
+    for dir in dirs {
+        let Ok(rd) = fs::read_dir(&dir) else {
+            continue;
+        };
         for e in rd.flatten() {
             let p = e.path();
-            if p.extension().and_then(|x| x.to_str()) == Some("jsonl") {
-                let sid = p.file_stem().and_then(|s| s.to_str()).unwrap_or("").to_string();
-                if sid.is_empty() {
-                    continue;
-                }
-                let last = fs::metadata(&p)
-                    .ok()
-                    .and_then(|m| m.modified().ok())
-                    .map(system_time_to_epoch_ms)
-                    .unwrap_or(0);
-                out.push(LocalSession {
-                    session_id: sid,
-                    // Title = the first real user prompt (cleanly one-lined,
-                    // injected context skipped) instead of the bare UUID file
-                    // stem, so the list reads like session titles, not "乱码".
-                    title: read_claude_session_title(&p),
-                    cwd: Some(project_id.clone()),
-                    process_name: None,
-                    model: None,
-                    created_at_ms: last,
-                    last_activity_ms: last,
-                    account_name: None,
-                    email_address: None,
-                });
+            if p.extension().and_then(|x| x.to_str()) != Some("jsonl") {
+                continue;
             }
+            let sid = p.file_stem().and_then(|s| s.to_str()).unwrap_or("").to_string();
+            if sid.is_empty() {
+                continue;
+            }
+            let last = fs::metadata(&p)
+                .ok()
+                .and_then(|m| m.modified().ok())
+                .map(system_time_to_epoch_ms)
+                .unwrap_or(0);
+            out.push(LocalSession {
+                session_id: sid,
+                // Title = the first real user prompt (cleanly one-lined, injected
+                // context skipped) instead of the bare UUID file stem.
+                title: read_claude_session_title(&p),
+                cwd: Some(project_id.clone()),
+                process_name: None,
+                model: None,
+                created_at_ms: last,
+                last_activity_ms: last,
+                account_name: None,
+                email_address: None,
+            });
         }
     }
     out.sort_by_key(|s| -s.last_activity_ms);
@@ -5375,19 +5397,27 @@ pub fn list_claude_sessions_library() -> Result<Vec<LibraryRow>, String> {
         .collect();
     let ws_states = symlink_share_states(&ws_paths, &ws_present);
 
-    // Union of project ids, sorted by most-recent activity.
-    let mut keys: std::collections::BTreeMap<String, (String, i64)> = std::collections::BTreeMap::new();
+    // Group projects by their ROOT cwd, collapsing git worktrees
+    // (<project>/.claude/worktrees/<name>) into the parent. Each worktree has its
+    // own ~/.claude/projects entry; without this they explode into 20+ rows of
+    // random worktree codenames instead of one project row. Empty dirs (0
+    // sessions) are dropped so they don't clutter the list either.
+    let mut roots: std::collections::BTreeMap<String, i64> = std::collections::BTreeMap::new();
     for projects in &per_col {
         for p in projects {
-            let e = keys.entry(p.id.clone()).or_insert((p.display_path.clone(), 0));
-            e.1 = e.1.max(p.last_modified_ms);
+            if p.session_count == 0 {
+                continue;
+            }
+            let e = roots
+                .entry(worktree_root(&p.display_path).to_string())
+                .or_insert(0);
+            *e = (*e).max(p.last_modified_ms);
         }
     }
-    let mut keys: Vec<(String, String, i64)> =
-        keys.into_iter().map(|(id, (disp, t))| (id, disp, t)).collect();
-    keys.sort_by_key(|(_, _, t)| -*t);
+    let mut roots: Vec<(String, i64)> = roots.into_iter().collect();
+    roots.sort_by_key(|(_, t)| -*t);
 
-    let mut rows: Vec<LibraryRow> = Vec::with_capacity(keys.len() + 1);
+    let mut rows: Vec<LibraryRow> = Vec::with_capacity(roots.len() + 1);
 
     // Synthetic whole-projects share row.
     let all_cells: Vec<LibraryCell> = cols
@@ -5427,16 +5457,25 @@ pub fn list_claude_sessions_library() -> Result<Vec<LibraryRow>, String> {
         group: Some("Sessions".into()),
     });
 
-    // Browse rows per project.
+    // One browse row per project (root). Cells aggregate every dir in the group
+    // (the project itself + all its worktrees) for that account.
     let home = std::env::var("HOME").unwrap_or_default();
-    for (pid, disp, _) in keys {
+    for (root, _) in roots {
         let cells: Vec<LibraryCell> = cols
             .iter()
             .enumerate()
             .map(|(i, (id, label, _))| {
-                let proj = per_col[i].iter().find(|p| p.id == pid);
-                let n = proj.map(|p| p.session_count).unwrap_or(0);
-                let last = proj.map(|p| p.last_modified_ms).unwrap_or(0);
+                let n: u32 = per_col[i]
+                    .iter()
+                    .filter(|p| worktree_root(&p.display_path) == root)
+                    .map(|p| p.session_count)
+                    .sum();
+                let last = per_col[i]
+                    .iter()
+                    .filter(|p| worktree_root(&p.display_path) == root)
+                    .map(|p| p.last_modified_ms)
+                    .max()
+                    .unwrap_or(0);
                 let detail = if n > 0 {
                     Some(format!(
                         "{n} session{} · {}",
@@ -5459,15 +5498,15 @@ pub fn list_claude_sessions_library() -> Result<Vec<LibraryRow>, String> {
                 }
             })
             .collect();
-        let label = Path::new(&disp)
+        let label = Path::new(&root)
             .file_name()
             .and_then(|n| n.to_str())
             .map(String::from)
-            .unwrap_or_else(|| disp.clone());
+            .unwrap_or_else(|| root.clone());
         rows.push(LibraryRow {
-            id: pid,
+            id: root.clone(),
             label,
-            description: Some(disp.replace(&home, "~")),
+            description: Some(root.replace(&home, "~")),
             cells,
             interactive: false,
             group: Some("Projects".into()),
@@ -6590,6 +6629,17 @@ pub fn list_memory_library() -> Result<Vec<LibraryRow>, String> {
 }
 fn apply_memory_share(change: &LibraryCellChange) -> Result<bool, String> {
     apply_memory_share_in(&memory_columns()?, change)
+}
+
+/// Collapse a git-worktree cwd to its parent project. Claude/gstack worktrees
+/// live at `<project>/.claude/worktrees/<name>`, each with its OWN
+/// ~/.claude/projects entry — without this they'd each surface as a separate
+/// project row of random codenames. Returns the cwd unchanged when not a worktree.
+fn worktree_root(cwd: &str) -> &str {
+    match cwd.find("/.claude/worktrees/") {
+        Some(i) => &cwd[..i],
+        None => cwd,
+    }
 }
 
 /// Read the real working directory recorded inside a project's newest session
