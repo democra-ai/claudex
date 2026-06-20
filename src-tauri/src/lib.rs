@@ -2964,6 +2964,138 @@ fn truncate_preview(s: &str) -> String {
     out
 }
 
+/// Turn a first-message preview into a tidy one-line session title: collapse all
+/// whitespace/newlines into single spaces and cap at ~80 chars, so the session
+/// list shows a readable title rather than a multi-line blob or a bare UUID.
+fn title_from_preview(s: &str) -> String {
+    let collapsed = s.split_whitespace().collect::<Vec<_>>().join(" ");
+    let trimmed = collapsed.trim();
+    if trimmed.chars().count() <= 80 {
+        return trimmed.to_string();
+    }
+    let mut out: String = trimmed.chars().take(80).collect();
+    out.push('…');
+    out
+}
+
+/// A first-message text that is injected context / tooling boilerplate, not the
+/// user's real prompt — skipped when picking a session title.
+fn is_noise_title(t: &str) -> bool {
+    let s = t.trim_start();
+    s.is_empty()
+        || s.starts_with('<') // <environment_context> / <system-reminder> / <command-name> / <permissions…>
+        || s.starts_with("Caveat:")
+        || s.starts_with("Conversation compacted")
+        || s.starts_with("[Request interrupted")
+        || s.starts_with("This session is being continued")
+}
+
+/// Pull the user-authored text blocks out of one Claude transcript record
+/// (content as a string, or message.content as string / array-of-{text}).
+fn claude_record_user_texts(v: &serde_json::Value) -> Vec<String> {
+    let is_user = v.get("type").and_then(|t| t.as_str()) == Some("user")
+        || v.get("message")
+            .and_then(|m| m.get("role"))
+            .and_then(|r| r.as_str())
+            == Some("user");
+    if !is_user {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    if let Some(s) = v.get("content").and_then(|c| c.as_str()) {
+        out.push(s.to_string());
+    }
+    if let Some(m) = v.get("message") {
+        if let Some(s) = m.get("content").and_then(|c| c.as_str()) {
+            out.push(s.to_string());
+        }
+        if let Some(arr) = m.get("content").and_then(|c| c.as_array()) {
+            for part in arr {
+                if let Some(s) = part.get("text").and_then(|x| x.as_str()) {
+                    out.push(s.to_string());
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Codex variant of `claude_record_user_texts`: a `response_item` payload with
+/// role "user" carries content parts `{ text }`.
+fn codex_record_user_texts(v: &serde_json::Value) -> Vec<String> {
+    let payload = match v.get("payload") {
+        Some(p) => p,
+        None => return Vec::new(),
+    };
+    if payload.get("role").and_then(|r| r.as_str()) != Some("user") {
+        return Vec::new();
+    }
+    payload
+        .get("content")
+        .and_then(|c| c.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|part| part.get("text").and_then(|x| x.as_str()).map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Collect user-authored text snippets from the HEAD of a transcript (bounded so
+/// a giant file is never fully loaded; the opening prompt is always near the top).
+fn session_head_user_texts(
+    path: &Path,
+    extract: impl Fn(&serde_json::Value) -> Vec<String>,
+) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let Ok(f) = fs::File::open(path) else {
+        return out;
+    };
+    let mut reader = std::io::BufReader::new(f);
+    let mut line = String::new();
+    for _ in 0..80 {
+        line.clear();
+        match std::io::BufRead::read_line(&mut reader, &mut line) {
+            Ok(0) | Err(_) => break,
+            Ok(_) => {}
+        }
+        let t = line.trim();
+        if t.is_empty() {
+            continue;
+        }
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(t) {
+            out.extend(extract(&v));
+            if out.len() >= 12 {
+                break;
+            }
+        }
+    }
+    out
+}
+
+/// Choose a session title: the first *real* user prompt; failing that, the first
+/// non-XML text (e.g. a continuation summary) so continued/compacted sessions get
+/// a readable label rather than the bare UUID. Never an `<…>` injected block.
+fn pick_title(texts: &[String]) -> Option<String> {
+    texts
+        .iter()
+        .find(|t| !is_noise_title(t))
+        .or_else(|| {
+            texts
+                .iter()
+                .find(|t| !t.trim_start().starts_with('<') && !t.trim().is_empty())
+        })
+        .map(|t| title_from_preview(t))
+}
+
+fn read_claude_session_title(path: &Path) -> Option<String> {
+    pick_title(&session_head_user_texts(path, claude_record_user_texts))
+}
+
+fn read_codex_session_title(path: &Path) -> Option<String> {
+    pick_title(&session_head_user_texts(path, codex_record_user_texts))
+}
+
 #[derive(Debug, Default)]
 struct ProjectFolderStats {
     session_count: u32,
@@ -4764,6 +4896,7 @@ struct CodexSessionMeta {
     cwd: String,
     model: Option<String>,
     last_activity_ms: i64,
+    path: PathBuf,
 }
 
 /// Scan a CODEX_HOME's sessions/ tree (head-only read per rollout for cwd/id).
@@ -4786,6 +4919,7 @@ fn scan_codex_rollouts(home: &Path) -> Vec<CodexSessionMeta> {
             cwd: if cwd.is_empty() { CODEX_NO_PROJECT.to_string() } else { cwd },
             model,
             last_activity_ms: last,
+            path: f,
         });
     }
     out
@@ -4978,7 +5112,10 @@ pub fn list_claude_sessions_for_project(
                     .unwrap_or(0);
                 out.push(LocalSession {
                     session_id: sid,
-                    title: None,
+                    // Title = the first real user prompt (cleanly one-lined,
+                    // injected context skipped) instead of the bare UUID file
+                    // stem, so the list reads like session titles, not "乱码".
+                    title: read_claude_session_title(&p),
                     cwd: Some(project_id.clone()),
                     process_name: None,
                     model: None,
@@ -5006,8 +5143,10 @@ pub fn list_codex_sessions_for_project(
         .into_iter()
         .filter(|s| s.cwd == cwd)
         .map(|s| LocalSession {
+            // Only the sessions for THIS cwd reach here (filtered above), so
+            // reading each one's first user message for the title is cheap.
+            title: read_codex_session_title(&s.path),
             session_id: s.session_id,
-            title: None,
             cwd: Some(s.cwd),
             process_name: None,
             model: s.model,
