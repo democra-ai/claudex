@@ -13,7 +13,8 @@ interface MatrixProps {
   /** Profiles to render as columns, ordered. */
   profiles: DesktopInstall[];
   pending: Map<string, PendingChange>;
-  onCellToggle: (rowId: string, installId: string, nextPresent: boolean) => void;
+  /** `wantsShared` true = share the cell, false = make it independent. */
+  onCellToggle: (rowId: string, installId: string, wantsShared: boolean) => void;
   onRowSelect: (rowId: string | null) => void;
   selectedRowId: string | null;
   loading: boolean;
@@ -150,8 +151,9 @@ export function Matrix({
               ) : null}
               <span className="mt-0.5 font-mono text-[9px] tabular-nums text-muted-foreground/70">
                 {summary.shared > 0 ? (
-                  <span className="text-state-shared">
-                    {STATE_GLYPH.shared} {summary.shared}
+                  <span className="inline-flex items-center gap-1 text-state-shared">
+                    <span className="dot-shared align-middle" aria-hidden />
+                    {summary.shared}
                   </span>
                 ) : null}
                 {summary.copied > 0 ? (
@@ -168,6 +170,28 @@ export function Matrix({
             </div>
           );
         })}
+      </div>
+
+      {/* Legend — one dense, non-interactive strip that teaches the single-click
+       *  share toggle so the matrix is self-explanatory. */}
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 border-b bg-muted/15 px-4 py-1 font-mono text-[10px] text-muted-foreground/80">
+        <span className="inline-flex items-center gap-1.5">
+          <span className="dot-shared align-middle" aria-hidden />
+          <span className="text-state-copied">●</span>
+          <span>shared / copied — click to make independent</span>
+        </span>
+        <span className="inline-flex items-center gap-1.5">
+          <span className="text-state-independent">○</span>
+          <span className="text-state-absent">·</span>
+          <span>independent / absent — click to share</span>
+        </span>
+        <span className="inline-flex items-center gap-1.5">
+          <span
+            className="inline-block h-2.5 w-2.5 rounded-[3px] bg-amber-500/15 align-middle ring-1 ring-inset ring-amber-500/40"
+            aria-hidden
+          />
+          <span>amber ring = pending · applies on Apply</span>
+        </span>
       </div>
 
       {/* Body */}
@@ -298,9 +322,9 @@ export function Matrix({
                         rowId={row.id}
                         pending={pending}
                         interactive={row.interactive}
-                        onToggle={(rowId, installId, nextPresent) => {
+                        onToggle={(rowId, installId, wantsShared) => {
                           if (row.interactive) {
-                            onCellToggle(rowId, installId, nextPresent);
+                            onCellToggle(rowId, installId, wantsShared);
                           } else {
                             // Browse-only rows: cell click opens detail
                             // for that row instead of staging a toggle.

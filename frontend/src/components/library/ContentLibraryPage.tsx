@@ -696,7 +696,7 @@ export default function ContentLibraryPage() {
   }, [activeKind, installs.length]);
 
   const handleCellToggle = useCallback(
-    (rowId: string, installId: string, nextPresent: boolean) => {
+    (rowId: string, installId: string, wantsShared: boolean) => {
       const rows = rowsByKind[activeKind];
       const row = rows?.find((r) => r.id === rowId);
       const cell = row?.cells.find((c) => c.install_id === installId);
@@ -716,14 +716,14 @@ export default function ContentLibraryPage() {
       const key = pendingKeyFor(rowId, installId);
       setPending((current) => {
         const next = new Map(current);
-        // For symlink content, "currently shared" is what we should compare —
-        // for code-history the "present" check is too lax. Use the cell's
-        // current effective state instead.
+        // `wantsShared` arrives already on the share axis (true = share, false =
+        // make independent). A click asking for the cell's current shared-ness
+        // is a toggle-back → drop the pending entry (click twice = no-op). The
+        // old `cell.present === wantsShared` conjunct mixed the present axis in
+        // and left independent/diverged toggles un-droppable; gone now.
         const currentShared =
           cell.state === "shared" || cell.state === "copied";
-        // Toggling back to the original state drops the pending entry.
-        const wantsShared = nextPresent;
-        if (wantsShared === currentShared && cell.present === wantsShared) {
+        if (wantsShared === currentShared) {
           next.delete(key);
         } else {
           next.set(key, { rowId, installId, wants: wantsShared });

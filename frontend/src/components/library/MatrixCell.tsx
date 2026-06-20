@@ -11,22 +11,31 @@ interface MatrixCellProps {
   rowId: string;
   /** Staged toggles keyed by pendingKeyFor(rowId, install_id). */
   pending: Map<string, PendingChange>;
-  onToggle: (rowId: string, installId: string, nextPresent: boolean) => void;
+  /** `wantsShared` true = make this cell shared (link to a source sibling);
+   *  false = make it independent (keep its own copy, leave the link). */
+  onToggle: (rowId: string, installId: string, wantsShared: boolean) => void;
   /** Non-interactive cells render dimmer and don't stage a pending toggle. */
   interactive?: boolean;
 }
 
 /** Predicted post-toggle state of the cell. Used to render the pending glyph
- *  optimistically while keeping the original state in `cell.state`. */
+ *  optimistically while keeping the original state in `cell.state`.
+ *
+ *  The toggle is on the SHARE axis: `wantsShared` true = join the link group
+ *  (→ shared), false = leave it but keep your own copy (→ independent, or
+ *  absent if the cell held nothing). Real state is recomputed on the next
+ *  refresh — copy-kind nuances (copied vs shared, MCP refuse-on-diverge,
+ *  memory un-share → absent) self-correct then; this is a best-effort
+ *  single-glyph hint mid-edit, not a per-family simulation. */
 function predictedState(
   cell: LibraryCell,
-  nextPresent: boolean | undefined,
+  wantsShared: boolean | undefined,
 ): CellState {
-  if (nextPresent === undefined) return cell.state;
-  if (nextPresent === cell.present) return cell.state;
-  // Toggling: present→absent or absent→independent. Real state is recomputed
-  // on next refresh — this is just a hint for the user mid-edit.
-  return nextPresent ? "independent" : "absent";
+  if (wantsShared === undefined) return cell.state;
+  const currentlyShared = cell.state === "shared" || cell.state === "copied";
+  if (wantsShared === currentlyShared) return cell.state;
+  if (wantsShared) return "shared";
+  return cell.present ? "independent" : "absent";
 }
 
 export function MatrixCell({
@@ -59,7 +68,16 @@ export function MatrixCell({
       <TooltipTrigger asChild>
         <button
           onClick={() =>
-            onToggle(rowId, cell.install_id, !cell.present /* desired */)
+            onToggle(
+              rowId,
+              cell.install_id,
+              // Share-axis toggle, pending-aware: flip the EFFECTIVE shared-ness
+              // (which already reflects a staged change) so a second click
+              // sends the opposite intent and cancels the pending entry.
+              // shared/copied → make independent (false); independent / absent
+              // / diverged → share (true).
+              !(effectiveState === "shared" || effectiveState === "copied"),
+            )
           }
           className={cn(
             // `min-h-10` keeps the 40px floor for short rows; `h-full` lets
