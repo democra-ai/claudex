@@ -5363,6 +5363,41 @@ fn count_jsonl_under(dir: &Path) -> usize {
     n
 }
 
+/// Non-destructive UNION merge: copy every FILE under `from` into `into` that
+/// doesn't already exist there (matched by relative path). Never overwrites or
+/// deletes anything in `into`; skips symlinked sub-dirs to avoid loops. Used
+/// when sharing so the pool gains each account's unique sessions (the union)
+/// instead of displacing a spoke's content into a backup and forgetting it.
+fn merge_dir_union(from: &Path, into: &Path) -> Result<usize, String> {
+    let mut copied = 0usize;
+    let mut stack = vec![PathBuf::new()]; // relative paths under `from`
+    while let Some(rel) = stack.pop() {
+        let Ok(rd) = fs::read_dir(from.join(&rel)) else {
+            continue;
+        };
+        for e in rd.flatten() {
+            let rel_child = rel.join(e.file_name());
+            match e.file_type() {
+                Ok(ft) if ft.is_dir() => stack.push(rel_child),
+                Ok(ft) if ft.is_symlink() => {} // don't follow links
+                _ => {
+                    let dst = into.join(&rel_child);
+                    if !dst.exists() {
+                        if let Some(parent) = dst.parent() {
+                            fs::create_dir_all(parent)
+                                .map_err(|e| format!("Create {}: {e}", parent.display()))?;
+                        }
+                        fs::copy(from.join(&rel_child), &dst)
+                            .map_err(|e| format!("Copy into pool: {e}"))?;
+                        copied += 1;
+                    }
+                }
+            }
+        }
+    }
+    Ok(copied)
+}
+
 /// Rollout count in a Codex account's REAL sessions dir (resolved through any
 /// symlink so a freshly-pooled spoke is counted by the hub it points at).
 fn codex_real_rollout_count(home: &Path) -> usize {
@@ -5483,6 +5518,13 @@ fn share_codex_sessions(source_home: &Path, target_home: &Path) -> Result<bool, 
             target.display(),
             source.display()
         ));
+    }
+    // UNION: before displacing the target, fold its own sessions into the source
+    // pool, so the shared pool becomes the UNION of every account's sessions — a
+    // spoke's unique sessions are merged in, never lost. Only a real target dir
+    // (not an existing link) holds unique content to merge.
+    if !target_is_link && target.is_dir() {
+        merge_dir_union(&target, &real_source)?;
     }
     // Guard passed — only now displace any real target dir, then link. Link to
     // the RAW source path (not the canonicalized one) so the path-based share
@@ -5783,6 +5825,11 @@ fn share_claude_sessions(source_config: &Path, target_config: &Path) -> Result<b
             target.display(),
             source.display()
         ));
+    }
+    // UNION: fold the target's own projects into the source pool first, so the
+    // shared pool is the union of every account's sessions (see share_codex_sessions).
+    if !target_is_link && target.is_dir() {
+        merge_dir_union(&target, &real_source)?;
     }
     if fs::symlink_metadata(&target).is_ok() {
         backup_existing_path(&target, target_config, CODE_PROJECTS_DIR)?;
@@ -10288,11 +10335,12 @@ mod tests {
     }
 
     /// END-TO-END regression for the data-loss incident: toggling SHARE on BOTH
-    /// Codex accounts in one Apply must NOT form a circular symlink. The batch
-    /// collapses to a single canonical hub = the RICHEST account; the other links
-    /// to it; no rollout is lost.
+    /// Codex accounts in one Apply must NOT form a circular symlink AND must
+    /// produce the UNION of their sessions (never drop a spoke's unique sessions).
+    /// The batch collapses to one real hub; every other account's unique sessions
+    /// are merged into the pool; un-share gives each a full independent copy.
     #[test]
-    fn e2e_codex_share_both_cells_no_cycle_richest_wins() {
+    fn e2e_codex_share_both_cells_unions_no_loss() {
         let _env = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         let home = tempfile::tempdir().unwrap();
         let prev_home = std::env::var_os("HOME");
@@ -10344,15 +10392,21 @@ mod tests {
         let def_dir = home.path().join(".codex").join("sessions");
         let judy_dir = home.path().join(".codex-judy").join("sessions");
 
-        // (1) The richest (default, 5) is the single REAL hub; JUDY is a symlink.
+        // (1) The hub (default) is the single REAL dir and now holds the UNION
+        //     (its 5 + judy's unique 1 = 6); JUDY is a symlink to it.
         assert!(
             !fs::symlink_metadata(&def_dir).unwrap().file_type().is_symlink(),
             "default sessions stays the real hub"
         );
-        assert_eq!(count_jsonl_under(&def_dir), 5, "hub keeps all 5 rollouts");
+        assert_eq!(count_jsonl_under(&def_dir), 6, "hub holds the UNION (5 + judy's 1)");
         assert!(
             fs::symlink_metadata(&judy_dir).unwrap().file_type().is_symlink(),
             "judy sessions became a symlink to the hub"
+        );
+        assert_eq!(count_jsonl_under(&judy_dir), 6, "judy sees the full union via the link");
+        assert!(
+            def_dir.join("2026").join("rollout-j.jsonl").exists(),
+            "judy's unique session was merged into the pool (union, not dropped)"
         );
 
         // (2) No cycle: both canonicalize and resolve to the SAME real dir.
@@ -10360,9 +10414,10 @@ mod tests {
         let cjudy = fs::canonicalize(&judy_dir).unwrap();
         assert_eq!(cdef, cjudy, "both point at one shared real pool, no loop");
 
-        // (3) Zero rollouts lost: hub (5) + JUDY's displaced backup (1) == 6.
+        // (3) judy's content is ALSO preserved in a backup (safety net), and the
+        //     hub itself was never displaced.
         let judy_backup = home.path().join(".codex-judy").join("Claude Multiprofile Backups");
-        assert_eq!(count_jsonl_under(&judy_backup), 1, "judy's 1 rollout preserved in backup");
+        assert_eq!(count_jsonl_under(&judy_backup), 1, "judy's original rollout also backed up");
         assert!(
             !home.path().join(".codex").join("Claude Multiprofile Backups").exists(),
             "the hub was never displaced"
@@ -10375,6 +10430,25 @@ mod tests {
             let c = all.cells.iter().find(|c| c.install_id == id).unwrap();
             assert_eq!(c.state, "shared", "{id} reads shared after the safe share");
         }
+
+        // (5) UN-SHARE judy → independent again with a full copy of the UNION (6),
+        //     losing nothing; the pool is untouched.
+        apply_library_changes(
+            "codex_sessions".to_string(),
+            vec![LibraryCellChange {
+                row_id: CODEX_ALL_SESSIONS_ID.to_string(),
+                target_install_id: "profile:judy".to_string(),
+                wants: false,
+                source_install_id: None,
+            }],
+        )
+        .unwrap();
+        assert!(
+            !fs::symlink_metadata(&judy_dir).unwrap().file_type().is_symlink(),
+            "judy is independent again after un-share"
+        );
+        assert_eq!(count_jsonl_under(&judy_dir), 6, "un-shared judy keeps the full union");
+        assert_eq!(count_jsonl_under(&def_dir), 6, "default still has the union");
 
         match prev_home {
             Some(v) => std::env::set_var("HOME", v),
