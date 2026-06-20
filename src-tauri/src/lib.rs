@@ -3172,8 +3172,14 @@ pub fn list_code_history(config_dir: &Path) -> Result<Vec<CodeProject>, String> 
             .most_recent_session
             .as_deref()
             .and_then(read_first_user_message);
+        // The `~/.claude/projects/<id>` dir name is a LOSSY encoding of the cwd
+        // (both `/` and `.` collapse to `-`), so decoding it gives a garbled path
+        // ("乱码"). Read the REAL cwd from the session transcript instead; only
+        // fall back to the lossy decode when there's no usable transcript.
+        let display_path =
+            project_cwd_from_sessions(&path).unwrap_or_else(|| decode_project_dir_name(&id));
         projects.push(CodeProject {
-            display_path: decode_project_dir_name(&id),
+            display_path,
             id,
             session_count: stats.session_count,
             total_bytes: stats.total_bytes,
