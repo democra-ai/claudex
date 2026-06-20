@@ -8401,6 +8401,16 @@ pub fn run() {
             }
             Ok(())
         })
+        .on_window_event(|window, event| {
+            // Clicking the window close button (red ✕ / Cmd-W) just HIDES the
+            // window — the app keeps running in the background. Clicking the dock
+            // icon re-shows it (RunEvent::Reopen below). Cmd-Q / the app menu
+            // still fully quit.
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                let _ = window.hide();
+                api.prevent_close();
+            }
+        })
         .invoke_handler(tauri::generate_handler![
             commands::list_desktop_installs,
             commands::create_desktop_profile,
@@ -8467,8 +8477,20 @@ pub fn run() {
             commands::list_sessions_for_project,
             commands::get_profile_stats
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running Claudex");
+        .build(tauri::generate_context!())
+        .expect("error while building Claudex")
+        .run(|app, event| {
+            // macOS: clicking the dock icon while the window is hidden re-shows it.
+            #[cfg(target_os = "macos")]
+            if let tauri::RunEvent::Reopen { .. } = &event {
+                use tauri::Manager;
+                if let Some(w) = app.get_webview_window("main") {
+                    let _ = w.show();
+                    let _ = w.set_focus();
+                }
+            }
+            let _ = (app, event);
+        });
 }
 
 #[cfg(test)]
