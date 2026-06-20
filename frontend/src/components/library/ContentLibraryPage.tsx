@@ -17,7 +17,7 @@ import type {
 import { KindNav, computeKindCount } from "./KindNav";
 import { Matrix } from "./Matrix";
 import { pendingKeyFor, type PendingChange } from "./pending";
-import { DetailSheet, type Selection } from "./DetailSheet";
+import { DetailSheet, SessionList, type Selection } from "./DetailSheet";
 import { PendingBar } from "./PendingBar";
 import { ClaudeMark, CodexMark } from "./PlatformMarks";
 import { profileColorVars } from "@/lib/profileColor";
@@ -893,6 +893,145 @@ export default function ContentLibraryPage() {
     [push],
   );
 
+  // ---- Inline session expansion + project/space-wide transfer ----
+  const [expandedRows, setExpandedRows] = useState<Set<string>>(new Set());
+  const toggleExpand = useCallback((rowId: string) => {
+    setExpandedRows((cur) => {
+      const next = new Set(cur);
+      if (next.has(rowId)) next.delete(rowId);
+      else next.add(rowId);
+      return next;
+    });
+  }, []);
+
+  const batchToast = useCallback(
+    (r: { imported: number; failed: number }, toolLabel: string) => {
+      const ok = r.imported === 1 ? "session" : "sessions";
+      push(
+        `Transferred ${r.imported} ${ok}${r.failed ? `, ${r.failed} failed` : ""} → ${toolLabel}.`,
+        r.imported === 0 && r.failed > 0 ? "error" : "success",
+      );
+    },
+    [push],
+  );
+
+  const handleProjectImport = useCallback(
+    async (installId: string, rowId: string) => {
+      setImporting(true);
+      try {
+        if (activeKind === "codex_sessions") {
+          batchToast(await api.importCodexProjectToClaude(installId, rowId), "Claude Code");
+        } else {
+          batchToast(await api.importClaudeProjectToCodex(installId, rowId), "Codex");
+        }
+      } catch (e) {
+        push(String(e), "error");
+      } finally {
+        setImporting(false);
+      }
+    },
+    [activeKind, batchToast, push],
+  );
+
+  const handleSpaceImport = useCallback(
+    async (installId: string) => {
+      setImporting(true);
+      try {
+        if (activeKind === "codex_sessions") {
+          batchToast(await api.importAllCodexToClaude(installId), "Claude Code");
+        } else {
+          batchToast(await api.importAllClaudeToCodex(installId), "Codex");
+        }
+      } catch (e) {
+        push(String(e), "error");
+      } finally {
+        setImporting(false);
+      }
+    },
+    [activeKind, batchToast, push],
+  );
+
+  const isSessionKind =
+    activeKind === "claude_sessions" || activeKind === "codex_sessions";
+  // Collapse any inline expansions when the kind changes (stale row ids).
+  useEffect(() => setExpandedRows(new Set()), [activeKind]);
+
+  const renderSessionRowExpanded = useCallback(
+    (row: LibraryRow) => {
+      const toCodex = activeKind === "claude_sessions";
+      const otherTool = toCodex ? "Codex" : "Claude Code";
+      // Import button is coloured by DESTINATION (Codex indigo / Claude copper).
+      const destClass = toCodex ? "text-[#4366F2] border-[#4366F2]/40" : "text-primary border-primary/40";
+      const isAllRow = row.id === "__all_sessions__";
+      const present = row.cells.filter((c) => c.present);
+      if (present.length === 0) {
+        return (
+          <div className="font-sans text-[11px] text-muted-foreground/70">
+            No sessions in this {isAllRow ? "workspace" : "project"} yet.
+          </div>
+        );
+      }
+      return (
+        <div className="space-y-3">
+          {present.map((cell) => {
+            const name = resolveInstallName(cell.install_id) ?? cell.install_name;
+            return (
+              <div key={cell.install_id}>
+                <div className="mb-1 flex items-center justify-between gap-2">
+                  <span className="font-sans text-[11px] font-medium text-foreground/85">
+                    {name}
+                    {cell.detail ? (
+                      <span className="ml-1.5 font-mono text-[10px] text-muted-foreground/70">
+                        {cell.detail}
+                      </span>
+                    ) : null}
+                  </span>
+                  <button
+                    type="button"
+                    disabled={importing}
+                    onClick={() =>
+                      isAllRow
+                        ? handleSpaceImport(cell.install_id)
+                        : handleProjectImport(cell.install_id, row.id)
+                    }
+                    className={cn(
+                      "shrink-0 rounded border px-2 py-0.5 font-sans text-[10px] transition-colors hover:bg-muted disabled:opacity-50",
+                      destClass,
+                    )}
+                  >
+                    {isAllRow ? `Import ALL → ${otherTool}` : `Import project → ${otherTool}`}
+                  </button>
+                </div>
+                {!isAllRow ? (
+                  <SessionList
+                    installId={cell.install_id}
+                    installName={name}
+                    rowId={row.id}
+                    kind={activeKind}
+                    onImportCodexSession={handleImportCodexSession}
+                    onExportClaudeSession={handleExportClaudeSession}
+                    transferBusy={importing}
+                    onContentChanged={() => loadKind(activeKind)}
+                  />
+                ) : null}
+              </div>
+            );
+          })}
+        </div>
+      );
+    },
+    [
+      activeKind,
+      importing,
+      resolveInstallName,
+      handleSpaceImport,
+      handleProjectImport,
+      handleImportCodexSession,
+      handleExportClaudeSession,
+      loadKind,
+    ],
+  );
+
   // Each region's "+" creates that type directly — Claude profile (Desktop
   // launcher + Code CLI alias) or Codex profile (Desktop launcher). Both are
   // --user-data-dir launchers; each isolates its own login.
@@ -1229,6 +1368,10 @@ export default function ContentLibraryPage() {
             selectedRowId={selectedRowId}
             loading={loadingKind === activeKind}
             emptyHint={EMPTY_HINTS[activeKind]}
+            canExpand={isSessionKind ? () => true : undefined}
+            expandedRows={expandedRows}
+            onToggleExpand={toggleExpand}
+            renderExpanded={isSessionKind ? renderSessionRowExpanded : undefined}
           />
         )}
       </main>

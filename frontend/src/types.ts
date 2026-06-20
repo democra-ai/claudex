@@ -290,6 +290,12 @@ export type LibraryKind =
   | "codex_memory"
   | "memory_cross";
 
+/** Result of a multi-session (project- or space-wide) transfer. */
+export type BatchImportResult = {
+  imported: number;
+  failed: number;
+};
+
 /** Result of importing a session from one tool into the other. */
 export type ImportResult = {
   from: string;

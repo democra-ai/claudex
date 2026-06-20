@@ -4,6 +4,7 @@ import type {
   CodexInstall,
   CodeProject,
   ImportResult,
+  BatchImportResult,
   CopySummary,
   DesktopInstall,
   LibraryCellChange,
@@ -248,6 +249,20 @@ export const api = {
 
   importClaudeSessionToCodex(source: string): Promise<ImportResult> {
     return invoke("import_claude_session_to_codex", { source });
+  },
+
+  // Batch transfer: a whole project, or a whole account (space-wide).
+  importCodexProjectToClaude(installId: string, cwd: string): Promise<BatchImportResult> {
+    return invoke("import_codex_project_to_claude", { installId, cwd });
+  },
+  importClaudeProjectToCodex(installId: string, projectId: string): Promise<BatchImportResult> {
+    return invoke("import_claude_project_to_codex", { installId, projectId });
+  },
+  importAllCodexToClaude(installId: string): Promise<BatchImportResult> {
+    return invoke("import_all_codex_to_claude", { installId });
+  },
+  importAllClaudeToCodex(installId: string): Promise<BatchImportResult> {
+    return invoke("import_all_claude_to_codex", { installId });
   },
 
   listSessionsForProject(

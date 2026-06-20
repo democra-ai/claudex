@@ -4883,6 +4883,90 @@ pub fn import_codex_session_to_claude_any_home(
     Err(last_err.unwrap_or_else(|| "No Codex session found.".to_string()))
 }
 
+/// Result of a multi-session import (project- or space-wide).
+#[derive(serde::Serialize)]
+pub struct BatchImportResult {
+    pub imported: usize,
+    pub failed: usize,
+}
+
+/// Import EVERY Codex session in one project (cwd) into Claude Code.
+pub fn import_codex_project_to_claude(
+    install_id: String,
+    cwd: String,
+) -> Result<BatchImportResult, String> {
+    let sessions = list_codex_sessions_for_project(install_id, cwd)?;
+    let (mut imported, mut failed) = (0, 0);
+    for s in sessions {
+        match import_codex_session_to_claude_any_home(s.session_id) {
+            Ok(_) => imported += 1,
+            Err(_) => failed += 1,
+        }
+    }
+    Ok(BatchImportResult { imported, failed })
+}
+
+/// Import EVERY Claude Code session in one project into Codex.
+pub fn import_claude_project_to_codex(
+    install_id: String,
+    project_id: String,
+) -> Result<BatchImportResult, String> {
+    let sessions = list_claude_sessions_for_project(install_id, project_id)?;
+    let (mut imported, mut failed) = (0, 0);
+    for s in sessions {
+        match convert::import_claude_session_to_codex(s.session_id) {
+            Ok(_) => imported += 1,
+            Err(_) => failed += 1,
+        }
+    }
+    Ok(BatchImportResult { imported, failed })
+}
+
+/// Import EVERY Codex session of one profile into Claude Code (space-wide).
+pub fn import_all_codex_to_claude(install_id: String) -> Result<BatchImportResult, String> {
+    let home = codex_home_for_column(&install_id)?
+        .ok_or_else(|| format!("Unknown Codex profile: {install_id}"))?;
+    let (mut imported, mut failed) = (0, 0);
+    for m in scan_codex_rollouts(&home) {
+        match import_codex_session_to_claude_any_home(m.session_id) {
+            Ok(_) => imported += 1,
+            Err(_) => failed += 1,
+        }
+    }
+    Ok(BatchImportResult { imported, failed })
+}
+
+/// Import EVERY Claude Code session of one account into Codex (space-wide).
+pub fn import_all_claude_to_codex(install_id: String) -> Result<BatchImportResult, String> {
+    let config = claude_config_for_column(&install_id)?
+        .ok_or_else(|| format!("Unknown Claude account: {install_id}"))?;
+    let (mut imported, mut failed) = (0, 0);
+    if let Ok(rd) = fs::read_dir(config.join(CODE_PROJECTS_DIR)) {
+        for e in rd.flatten() {
+            if !e.path().is_dir() {
+                continue;
+            }
+            if let Ok(rd2) = fs::read_dir(e.path()) {
+                for f in rd2.flatten() {
+                    let p = f.path();
+                    if p.extension().and_then(|x| x.to_str()) != Some("jsonl") {
+                        continue;
+                    }
+                    let sid = p.file_stem().and_then(|s| s.to_str()).unwrap_or("").to_string();
+                    if sid.is_empty() {
+                        continue;
+                    }
+                    match convert::import_claude_session_to_codex(sid) {
+                        Ok(_) => imported += 1,
+                        Err(_) => failed += 1,
+                    }
+                }
+            }
+        }
+    }
+    Ok(BatchImportResult { imported, failed })
+}
+
 const CODEX_SESSIONS_DIR: &str = "sessions";
 /// Row id of the synthetic whole-`sessions/` share row.
 const CODEX_ALL_SESSIONS_ID: &str = "__all_sessions__";
@@ -7883,6 +7967,32 @@ mod commands {
     }
 
     #[tauri::command]
+    pub fn import_codex_project_to_claude(
+        install_id: String,
+        cwd: String,
+    ) -> Result<super::BatchImportResult, String> {
+        super::import_codex_project_to_claude(install_id, cwd)
+    }
+
+    #[tauri::command]
+    pub fn import_claude_project_to_codex(
+        install_id: String,
+        project_id: String,
+    ) -> Result<super::BatchImportResult, String> {
+        super::import_claude_project_to_codex(install_id, project_id)
+    }
+
+    #[tauri::command]
+    pub fn import_all_codex_to_claude(install_id: String) -> Result<super::BatchImportResult, String> {
+        super::import_all_codex_to_claude(install_id)
+    }
+
+    #[tauri::command]
+    pub fn import_all_claude_to_codex(install_id: String) -> Result<super::BatchImportResult, String> {
+        super::import_all_claude_to_codex(install_id)
+    }
+
+    #[tauri::command]
     pub fn list_code_history(config_dir: String) -> Result<Vec<CodeProject>, String> {
         super::list_code_history(Path::new(&config_dir))
     }
@@ -8199,6 +8309,10 @@ pub fn run() {
             commands::delete_codex_profile,
             commands::import_codex_session_to_claude,
             commands::import_claude_session_to_codex,
+            commands::import_codex_project_to_claude,
+            commands::import_claude_project_to_codex,
+            commands::import_all_codex_to_claude,
+            commands::import_all_claude_to_codex,
             commands::list_code_history,
             commands::list_pair_code_history_sharing,
             commands::apply_pair_code_history_sharing,

@@ -93,7 +93,7 @@ function formatRelative(ms: number): string {
   return `${Math.floor(s / (86400 * 30))}mo ago`;
 }
 
-function SessionList({
+export function SessionList({
   installId,
   installName,
   rowId,

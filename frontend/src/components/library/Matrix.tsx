@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { Search, Inbox } from "lucide-react";
+import { Search, Inbox, ChevronRight } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import type { DesktopInstall, LibraryRow } from "@/types";
@@ -19,6 +19,13 @@ interface MatrixProps {
   loading: boolean;
   /** Optional empty-state message specific to the kind. */
   emptyHint?: string;
+  /** When set, rows for which it returns true get an inline expand chevron. */
+  canExpand?: (row: LibraryRow) => boolean;
+  /** Currently-expanded row ids. */
+  expandedRows?: Set<string>;
+  onToggleExpand?: (rowId: string) => void;
+  /** Inline content rendered full-width below an expanded row. */
+  renderExpanded?: (row: LibraryRow) => React.ReactNode;
 }
 
 /**
@@ -43,6 +50,10 @@ export function Matrix({
   selectedRowId,
   loading,
   emptyHint,
+  canExpand,
+  expandedRows,
+  onToggleExpand,
+  renderExpanded,
 }: MatrixProps) {
   const [search, setSearch] = useState("");
 
@@ -216,43 +227,57 @@ export function Matrix({
                   {/* Row label — `min-w-0` lets it respect the grid column
                    *  instead of expanding to its intrinsic content width.
                    *  `overflow-hidden` confines the truncate/line-clamp. */}
-                  <button
-                    type="button"
-                    onClick={() => onRowSelect(isSelected ? null : row.id)}
+                  <div
                     className={cn(
-                      "flex min-w-0 flex-col items-start justify-center gap-0.5 overflow-hidden border-r px-4 py-2 text-left transition-colors",
-                      "hover:bg-muted/40",
+                      "flex min-w-0 items-stretch overflow-hidden border-r transition-colors",
                       isSelected && "border-l-2 border-l-primary",
                     )}
-                    title={
-                      row.label !== row.id
-                        ? `${row.label}\n${row.id}`
-                        : row.id
-                    }
                   >
-                    {/* Label: wrap up to 2 lines for session titles, then ellipsis.
-                     *  `block w-full` makes line-clamp actually box-constrained
-                     *  rather than overflowing into the cells column. */}
-                    <span
-                      className={cn(
-                        "block w-full font-sans text-[13px] leading-snug line-clamp-2 break-words",
-                        isSelected
-                          ? "font-medium text-foreground"
-                          : "text-foreground/85",
-                      )}
-                    >
-                      {row.label}
-                    </span>
-                    {row.description ? (
-                      <span className="block w-full truncate font-sans text-[10px] text-muted-foreground/80">
-                        {row.description}
-                      </span>
-                    ) : row.label !== row.id ? (
-                      <span className="block w-full truncate font-mono text-[10px] text-muted-foreground/70">
-                        {row.id}
-                      </span>
+                    {canExpand?.(row) ? (
+                      <button
+                        type="button"
+                        onClick={() => onToggleExpand?.(row.id)}
+                        className="flex shrink-0 items-center px-1.5 text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground"
+                        title={expandedRows?.has(row.id) ? "Collapse sessions" : "Expand sessions"}
+                        aria-label="Toggle sessions"
+                      >
+                        <ChevronRight
+                          className={cn(
+                            "h-3.5 w-3.5 transition-transform",
+                            expandedRows?.has(row.id) && "rotate-90",
+                          )}
+                        />
+                      </button>
                     ) : null}
-                  </button>
+                    <button
+                      type="button"
+                      onClick={() => onRowSelect(isSelected ? null : row.id)}
+                      className="flex min-w-0 flex-1 flex-col items-start justify-center gap-0.5 overflow-hidden px-3 py-2 text-left transition-colors hover:bg-muted/40"
+                      title={
+                        row.label !== row.id ? `${row.label}\n${row.id}` : row.id
+                      }
+                    >
+                      <span
+                        className={cn(
+                          "block w-full font-sans text-[13px] leading-snug line-clamp-2 break-words",
+                          isSelected
+                            ? "font-medium text-foreground"
+                            : "text-foreground/85",
+                        )}
+                      >
+                        {row.label}
+                      </span>
+                      {row.description ? (
+                        <span className="block w-full truncate font-sans text-[10px] text-muted-foreground/80">
+                          {row.description}
+                        </span>
+                      ) : row.label !== row.id ? (
+                        <span className="block w-full truncate font-mono text-[10px] text-muted-foreground/70">
+                          {row.id}
+                        </span>
+                      ) : null}
+                    </button>
+                  </div>
                   {/* Cells */}
                   {profiles.map((p) => {
                     const cell = row.cells.find((c) => c.install_id === p.id);
@@ -287,6 +312,16 @@ export function Matrix({
                   })}
                   </div>,
                 );
+                if (expandedRows?.has(row.id) && renderExpanded) {
+                  out.push(
+                    <div
+                      key={`${row.id}__expanded`}
+                      className="border-b bg-muted/20 px-4 py-2.5"
+                    >
+                      {renderExpanded(row)}
+                    </div>,
+                  );
+                }
               });
               return out;
             })()}
