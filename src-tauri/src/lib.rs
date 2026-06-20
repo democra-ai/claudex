@@ -2440,38 +2440,86 @@ fn codex_install_from_profile(profile: &RegistryProfile) -> Option<CodexInstall>
 
 /// Codex.app launched with `--user-data-dir=<path>` => that profile is live;
 /// without the flag => the default install. Mirrors detect_running_data_dirs.
+/// Extract a `--user-data-dir=<path>` value from a process argv string, or None.
+/// Splits at the next ` --` so a data dir containing spaces survives intact.
+fn parse_user_data_dir(args: &str) -> Option<PathBuf> {
+    let idx = args.find("--user-data-dir=")?;
+    let after = &args[idx + "--user-data-dir=".len()..];
+    let path_str = after
+        .find(" --")
+        .map(|j| &after[..j])
+        .unwrap_or(after)
+        .trim()
+        .trim_end_matches('\0');
+    (!path_str.is_empty()).then(|| PathBuf::from(path_str))
+}
+
+/// From `lsof -Fn` output, return the first open file's top-level data dir under
+/// `<base>/Codex` or `<base>/Codex-<name>`. Excludes unrelated apps (e.g.
+/// `CodexBar`). Pure + testable given the raw output and the support-dir base.
+fn codex_data_dir_from_lsof(raw: &str, base: &Path) -> Option<PathBuf> {
+    let prefix = format!("{}/", base.to_string_lossy());
+    for line in raw.lines() {
+        let Some(path) = line.strip_prefix('n') else {
+            continue;
+        };
+        let Some(rel) = path.strip_prefix(&prefix) else {
+            continue;
+        };
+        let seg = rel.split('/').next().unwrap_or("");
+        if seg == "Codex" || seg.starts_with("Codex-") {
+            return Some(base.join(seg));
+        }
+    }
+    None
+}
+
+/// Resolve a Codex pid's open desktop data dir via a single bounded lsof. Used
+/// ONLY for processes whose argv lacks --user-data-dir, so the default is never
+/// a catch-all for every flagless Codex process.
+fn lsof_codex_data_dir(pid: &str) -> Option<PathBuf> {
+    let base = home_dir().ok()?.join("Library/Application Support");
+    let out = Command::new("/usr/sbin/lsof")
+        .args(["-p", pid, "-Fn"])
+        .output()
+        .ok()?;
+    // lsof commonly exits nonzero with partial output — scan whatever we got.
+    let raw = String::from_utf8_lossy(&out.stdout);
+    codex_data_dir_from_lsof(&raw, &base)
+}
+
 fn detect_running_codex_data_dirs() -> Vec<PathBuf> {
-    let out = match Command::new("/bin/ps").args(["-Aww", "-o", "args="]).output() {
+    let out = match Command::new("/bin/ps").args(["-Aww", "-o", "pid=,args="]).output() {
         Ok(o) if o.status.success() => o,
         _ => return Vec::new(),
     };
     let raw = String::from_utf8_lossy(&out.stdout);
-    let default_dir = default_codex_desktop_data_dir().ok();
     let mut running: Vec<PathBuf> = Vec::new();
     for line in raw.lines() {
-        let trimmed = line.trim_start();
-        if !trimmed.contains("/Codex.app/Contents/MacOS/Codex") {
+        let line = line.trim_start();
+        let Some((pid, args)) = line.split_once(char::is_whitespace) else {
+            continue;
+        };
+        let args = args.trim_start();
+        if !args.contains("/Codex.app/Contents/MacOS/Codex") {
             continue;
         }
-        if trimmed.contains("Helper")
-            || trimmed.contains("Renderer")
-            || trimmed.contains("Crashpad")
-            || trimmed.contains("GPU")
-            || trimmed.contains("Utility")
+        if args.contains("Helper")
+            || args.contains("Renderer")
+            || args.contains("Crashpad")
+            || args.contains("GPU")
+            || args.contains("Utility")
         {
             continue;
         }
-        if let Some(idx) = trimmed.find("--user-data-dir=") {
-            let after = &trimmed[idx + "--user-data-dir=".len()..];
-            let path_str = after
-                .find(" --")
-                .map(|j| &after[..j])
-                .unwrap_or(after)
-                .trim()
-                .trim_end_matches('\0');
-            running.push(PathBuf::from(path_str));
-        } else if let Some(d) = &default_dir {
-            running.push(d.clone());
+        // argv fast path (every in-app + launcher-.app launch carries the flag);
+        // else resolve the real open data dir via lsof; else attribute to NOTHING
+        // — never fold a flagless Codex process onto the default (the old bug
+        // that left the default stuck-"live" and profiles invisible).
+        if let Some(p) = parse_user_data_dir(args) {
+            running.push(p);
+        } else if let Some(p) = lsof_codex_data_dir(pid.trim()) {
+            running.push(p);
         }
     }
     running
@@ -5273,14 +5321,141 @@ pub fn list_codex_sessions_for_project(
 }
 
 /// Symlink the whole `<source_home>/sessions` into `<target_home>/sessions`.
+/// Resolve a path to its REAL underlying directory. For an existing path this is
+/// `fs::canonicalize`. For a not-yet-created leaf (a symlink slot we're about to
+/// write) it canonicalizes the PARENT and rejoins the leaf, so source and target
+/// can be compared on real paths even before the link exists.
+fn real_dir_of(p: &Path) -> Option<PathBuf> {
+    if let Ok(rp) = fs::canonicalize(p) {
+        return Some(rp);
+    }
+    let parent = p.parent()?;
+    let leaf = p.file_name()?;
+    fs::canonicalize(parent).ok().map(|rp| rp.join(leaf))
+}
+
+/// Linking `target -> source` self-links or cycles iff their REAL (canonicalized)
+/// paths are equal — for sibling sessions/ or projects/ dirs a cycle always
+/// collapses to equality after canonicalize, so this one test is sufficient.
+fn would_cycle_or_selflink(real_source: &Path, real_target: &Path) -> bool {
+    real_source == real_target
+}
+
+/// Count *.jsonl files recursively under `dir` (Codex rollouts / Claude
+/// sessions). DirEntry file types are not symlink-followed, so a symlinked
+/// sub-dir is not descended — pass a REAL (canonicalized) root.
+fn count_jsonl_under(dir: &Path) -> usize {
+    let mut n = 0usize;
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        let Ok(rd) = fs::read_dir(&d) else { continue };
+        for e in rd.flatten() {
+            match e.file_type() {
+                Ok(ft) if ft.is_dir() => stack.push(e.path()),
+                _ => {
+                    if e.path().extension().and_then(|x| x.to_str()) == Some("jsonl") {
+                        n += 1;
+                    }
+                }
+            }
+        }
+    }
+    n
+}
+
+/// Rollout count in a Codex account's REAL sessions dir (resolved through any
+/// symlink so a freshly-pooled spoke is counted by the hub it points at).
+fn codex_real_rollout_count(home: &Path) -> usize {
+    match real_dir_of(&home.join(CODEX_SESSIONS_DIR)) {
+        Some(d) if d.is_dir() => count_jsonl_under(&d),
+        _ => 0,
+    }
+}
+
+/// Session (.jsonl) count in a Claude account's REAL projects dir.
+fn claude_real_session_count(config: &Path) -> usize {
+    match real_dir_of(&config.join(CODE_PROJECTS_DIR)) {
+        Some(d) if d.is_dir() => count_jsonl_under(&d),
+        _ => 0,
+    }
+}
+
+/// Pick the richest account id among `candidates`, looking it up in
+/// `(id, is_default, count)` triples; ties prefer the default account.
+fn pick_richest_source(
+    candidates: &[String],
+    counts: &[(String, bool, usize)],
+) -> Option<String> {
+    candidates
+        .iter()
+        .filter_map(|id| counts.iter().find(|(cid, _, _)| cid == id))
+        .max_by(|a, b| a.2.cmp(&b.2).then(a.1.cmp(&b.1)))
+        .map(|(id, _, _)| id.clone())
+}
+
+/// Collapse a batch of "All sessions" SHARE toggles into a star topology: ONE
+/// canonical real source (the richest account) plus every other staged account
+/// linked to it. This closes the data-loss hole where toggling share on two
+/// independent accounts in one Apply made the sequential per-change auto-pick
+/// choose each other and form a circular symlink (both dirs displaced to
+/// backups → "all sessions gone"). Non-sessions kinds, single-toggle batches,
+/// and un-share batches pass through untouched.
+fn canonicalize_sessions_batch(
+    kind: &str,
+    changes: Vec<LibraryCellChange>,
+) -> Result<Vec<LibraryCellChange>, String> {
+    let (share_on, rest): (Vec<_>, Vec<_>) = changes
+        .into_iter()
+        .partition(|c| c.row_id == CODEX_ALL_SESSIONS_ID && c.wants);
+    if share_on.len() < 2 {
+        let mut v = rest;
+        v.extend(share_on);
+        return Ok(v);
+    }
+    let target_ids: Vec<String> = share_on.iter().map(|c| c.target_install_id.clone()).collect();
+    // An explicit source on any staged change wins (the UI sends none today).
+    let canonical_id = if let Some(explicit) = share_on.iter().find_map(|c| c.source_install_id.clone()) {
+        explicit
+    } else {
+        let counts: Vec<(String, bool, usize)> = if kind == "codex_sessions" {
+            codex_profile_columns()?
+                .iter()
+                .map(|c| (c.id.clone(), c.kind == "default", codex_real_rollout_count(&c.home)))
+                .collect()
+        } else {
+            claude_session_cols()?
+                .iter()
+                .map(|(id, _, dir)| (id.clone(), id == "default", claude_real_session_count(dir)))
+                .collect()
+        };
+        pick_richest_source(&target_ids, &counts)
+            .ok_or_else(|| "No source account available to share from.".to_string())?
+    };
+    // Drop the canonical's own toggle (a source never links to itself); rewrite
+    // every other staged account to link explicitly to the canonical hub.
+    let mut out = rest;
+    for c in share_on {
+        if c.target_install_id == canonical_id {
+            continue;
+        }
+        out.push(LibraryCellChange {
+            row_id: CODEX_ALL_SESSIONS_ID.to_string(),
+            target_install_id: c.target_install_id,
+            wants: true,
+            source_install_id: Some(canonical_id.clone()),
+        });
+    }
+    Ok(out)
+}
+
 fn share_codex_sessions(source_home: &Path, target_home: &Path) -> Result<bool, String> {
     let source = source_home.join(CODEX_SESSIONS_DIR);
     let target = target_home.join(CODEX_SESSIONS_DIR);
-    if !source.exists() {
+    if !source.is_dir() {
         return Err("Source account has no sessions/ dir yet.".to_string());
     }
     if path_points_to(&target, &source) {
-        return Ok(false); // already shared
+        return Ok(false); // already shared (cheap one-hop check)
     }
     // Ensure the target CODEX_HOME exists first, else symlink(2) fails with
     // ENOENT and the share silently never happens (same class of bug as
@@ -5288,7 +5463,32 @@ fn share_codex_sessions(source_home: &Path, target_home: &Path) -> Result<bool, 
     // sessions/ link target.
     fs::create_dir_all(target_home)
         .map_err(|e| format!("Create {}: {e}", target_home.display()))?;
-    // Back up any real target sessions dir, then symlink.
+    // DEFENSE IN DEPTH: resolve both ends to their REAL dirs and refuse any
+    // self/cycle link BEFORE displacing anything, and always link to the
+    // canonicalized real source so a symlink chain can never lengthen.
+    let real_source = real_dir_of(&source)
+        .filter(|p| p.is_dir())
+        .ok_or_else(|| "Source sessions/ does not resolve to a real directory.".to_string())?;
+    let real_target =
+        real_dir_of(&target).ok_or_else(|| "Cannot resolve target sessions/ path.".to_string())?;
+    let target_is_link = fs::symlink_metadata(&target)
+        .map(|m| m.file_type().is_symlink())
+        .unwrap_or(false);
+    if target_is_link && real_target == real_source {
+        return Ok(false); // chain already resolves to the source — nothing to do
+    }
+    if would_cycle_or_selflink(&real_source, &real_target) {
+        return Err(format!(
+            "Refusing to share: linking {} → {} would create a cycle or self-link.",
+            target.display(),
+            source.display()
+        ));
+    }
+    // Guard passed — only now displace any real target dir, then link. Link to
+    // the RAW source path (not the canonicalized one) so the path-based share
+    // detection (symlink_share_states / path_points_to, which compares against
+    // sibling raw paths) keeps reading "shared". Layer 1 guarantees the source
+    // is a real dir, so this never lengthens a chain.
     if fs::symlink_metadata(&target).is_ok() {
         backup_existing_path(&target, target_home, CODEX_SESSIONS_DIR)?;
     }
@@ -5549,7 +5749,7 @@ pub fn list_claude_sessions_library() -> Result<Vec<LibraryRow>, String> {
 fn share_claude_sessions(source_config: &Path, target_config: &Path) -> Result<bool, String> {
     let source = source_config.join(CODE_PROJECTS_DIR);
     let target = target_config.join(CODE_PROJECTS_DIR);
-    if !source.exists() {
+    if !source.is_dir() {
         return Err("Source account has no projects/ dir yet.".to_string());
     }
     if path_points_to(&target, &source) {
@@ -5563,9 +5763,32 @@ fn share_claude_sessions(source_config: &Path, target_config: &Path) -> Result<b
     // never the projects/ link target — so a real projects dir is never clobbered.
     fs::create_dir_all(target_config)
         .map_err(|e| format!("Create {}: {e}", target_config.display()))?;
+    // DEFENSE IN DEPTH (twin of share_codex_sessions): resolve to REAL dirs,
+    // refuse any self/cycle link BEFORE backup, and link to the real source so
+    // the symlink chain can never lengthen.
+    let real_source = real_dir_of(&source)
+        .filter(|p| p.is_dir())
+        .ok_or_else(|| "Source projects/ does not resolve to a real directory.".to_string())?;
+    let real_target =
+        real_dir_of(&target).ok_or_else(|| "Cannot resolve target projects/ path.".to_string())?;
+    let target_is_link = fs::symlink_metadata(&target)
+        .map(|m| m.file_type().is_symlink())
+        .unwrap_or(false);
+    if target_is_link && real_target == real_source {
+        return Ok(false);
+    }
+    if would_cycle_or_selflink(&real_source, &real_target) {
+        return Err(format!(
+            "Refusing to share: linking {} → {} would create a cycle or self-link.",
+            target.display(),
+            source.display()
+        ));
+    }
     if fs::symlink_metadata(&target).is_ok() {
         backup_existing_path(&target, target_config, CODE_PROJECTS_DIR)?;
     }
+    // Link to the RAW source so path-based detection keeps reading "shared"
+    // (see share_codex_sessions). Layer 1 guarantees source is a real dir.
     symlink_path(&source, &target)?;
     Ok(true)
 }
@@ -6992,6 +7215,15 @@ pub fn apply_library_changes(
     kind: String,
     changes: Vec<LibraryCellChange>,
 ) -> Result<CopySummary, String> {
+    // Collapse a multi-cell "All sessions" share batch to one canonical source +
+    // spokes BEFORE applying, so no second per-change auto-pick can observe a
+    // freshly-created symlink and form a cycle (the data-loss guard). Strictly
+    // gated on the two sessions kinds — every other kind passes through.
+    let changes = if matches!(kind.as_str(), "codex_sessions" | "claude_sessions") {
+        canonicalize_sessions_batch(&kind, changes)?
+    } else {
+        changes
+    };
     let mut copied = 0;
     let mut skipped = 0;
     for change in changes {
@@ -9998,6 +10230,163 @@ mod tests {
         let tgt_sessions = tgt.path().join("sessions");
         assert!(tgt_sessions.join("from-c.jsonl").exists(), "copied C's content");
         assert!(!tgt_sessions.join("from-b.jsonl").exists(), "did NOT copy B's content");
+    }
+
+    /// DEFENSE IN DEPTH: share_codex_sessions must REFUSE a link that would form a
+    /// cycle (target already resolves to the source), and must do so BEFORE any
+    /// backup — so a refused op never displaces real data.
+    #[test]
+    fn share_codex_sessions_refuses_cycle_before_backup() {
+        let a = tempfile::tempdir().unwrap();
+        let b = tempfile::tempdir().unwrap();
+        // A has the real sessions; B/sessions is a symlink -> A/sessions.
+        let a_sessions = a.path().join("sessions");
+        fs::create_dir_all(&a_sessions).unwrap();
+        fs::write(a_sessions.join("keep.jsonl"), "{}").unwrap();
+        std::os::unix::fs::symlink(&a_sessions, b.path().join("sessions")).unwrap();
+
+        // Ask A to link to B — but B already resolves to A => would cycle.
+        let res = share_codex_sessions(b.path(), a.path());
+        assert!(res.is_err(), "must refuse the cycle");
+        assert!(res.unwrap_err().contains("cycle or self-link"));
+        // No backup created, A's real content untouched (refused before backup).
+        assert!(!a.path().join("Claude Multiprofile Backups").exists());
+        assert!(a_sessions.is_dir() && a_sessions.join("keep.jsonl").exists());
+
+        // Self-link (A onto itself) is likewise refused, A intact.
+        let res2 = share_codex_sessions(a.path(), a.path());
+        assert!(res2.is_err(), "self-link refused");
+        assert!(a_sessions.join("keep.jsonl").exists());
+    }
+
+    #[test]
+    fn parse_user_data_dir_handles_spaces_and_flags() {
+        assert_eq!(
+            parse_user_data_dir("/x/Codex --user-data-dir=/Users/me/Library/Application Support/Codex-JUDY --enable-foo"),
+            Some(PathBuf::from("/Users/me/Library/Application Support/Codex-JUDY")),
+        );
+        // Last token (no trailing flag).
+        assert_eq!(
+            parse_user_data_dir("/x/Codex --user-data-dir=/Users/me/Library/Application Support/Codex"),
+            Some(PathBuf::from("/Users/me/Library/Application Support/Codex")),
+        );
+        assert_eq!(parse_user_data_dir("/x/Codex --no-flag"), None);
+    }
+
+    #[test]
+    fn codex_data_dir_from_lsof_resolves_profile_and_excludes_codexbar() {
+        let base = Path::new("/Users/me/Library/Application Support");
+        // A profile process: its open Codex-JUDY data dir wins.
+        let raw = "p123\nn/Users/me/Library/Application Support/Codex-JUDY/Local State\nn/etc/hosts\n";
+        assert_eq!(codex_data_dir_from_lsof(raw, base), Some(base.join("Codex-JUDY")));
+        // Default process.
+        let raw_def = "n/Users/me/Library/Application Support/Codex/Cookies\n";
+        assert_eq!(codex_data_dir_from_lsof(raw_def, base), Some(base.join("Codex")));
+        // The unrelated CodexBar app must NOT be attributed to Codex/profiles.
+        let raw_bar = "n/Users/me/Library/Application Support/CodexBar/state.json\n";
+        assert_eq!(codex_data_dir_from_lsof(raw_bar, base), None);
+    }
+
+    /// END-TO-END regression for the data-loss incident: toggling SHARE on BOTH
+    /// Codex accounts in one Apply must NOT form a circular symlink. The batch
+    /// collapses to a single canonical hub = the RICHEST account; the other links
+    /// to it; no rollout is lost.
+    #[test]
+    fn e2e_codex_share_both_cells_no_cycle_richest_wins() {
+        let _env = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let home = tempfile::tempdir().unwrap();
+        let prev_home = std::env::var_os("HOME");
+        let prev_xdg = std::env::var_os("XDG_CONFIG_HOME");
+        let prev_codex = std::env::var_os("CODEX_HOME");
+        std::env::set_var("HOME", home.path());
+        std::env::set_var("XDG_CONFIG_HOME", home.path().join(".config"));
+        std::env::remove_var("CODEX_HOME"); // default => ~/.codex
+
+        // Default (~/.codex) is the RICHER account: 5 rollouts. JUDY: 1.
+        let def_sessions = home.path().join(".codex").join("sessions").join("2026").join("06");
+        fs::create_dir_all(&def_sessions).unwrap();
+        for i in 0..5 {
+            fs::write(def_sessions.join(format!("rollout-{i}.jsonl")), "{}").unwrap();
+        }
+        let judy_sessions = home.path().join(".codex-judy").join("sessions").join("2026");
+        fs::create_dir_all(&judy_sessions).unwrap();
+        fs::write(judy_sessions.join("rollout-j.jsonl"), "{}").unwrap();
+
+        // Registry: a JUDY codex profile (non-null codex) so it's a column.
+        let reg = home.path().join(".config").join("claude-multiprofile");
+        fs::create_dir_all(&reg).unwrap();
+        fs::write(
+            reg.join("profiles.json"),
+            r#"{"version":1,"profiles":[{"name":"judy","type":"both","desktop":null,"code":null,"codex":{"dataDir":"x","codexHome":"x","launcherPath":"x","codexAppPath":"x"},"createdAt":"2026-01-01T00:00:00Z"}]}"#,
+        )
+        .unwrap();
+
+        // ACT: the exact incident batch — share BOTH cells at once.
+        apply_library_changes(
+            "codex_sessions".to_string(),
+            vec![
+                LibraryCellChange {
+                    row_id: CODEX_ALL_SESSIONS_ID.to_string(),
+                    target_install_id: "default".to_string(),
+                    wants: true,
+                    source_install_id: None,
+                },
+                LibraryCellChange {
+                    row_id: CODEX_ALL_SESSIONS_ID.to_string(),
+                    target_install_id: "profile:judy".to_string(),
+                    wants: true,
+                    source_install_id: None,
+                },
+            ],
+        )
+        .unwrap();
+
+        let def_dir = home.path().join(".codex").join("sessions");
+        let judy_dir = home.path().join(".codex-judy").join("sessions");
+
+        // (1) The richest (default, 5) is the single REAL hub; JUDY is a symlink.
+        assert!(
+            !fs::symlink_metadata(&def_dir).unwrap().file_type().is_symlink(),
+            "default sessions stays the real hub"
+        );
+        assert_eq!(count_jsonl_under(&def_dir), 5, "hub keeps all 5 rollouts");
+        assert!(
+            fs::symlink_metadata(&judy_dir).unwrap().file_type().is_symlink(),
+            "judy sessions became a symlink to the hub"
+        );
+
+        // (2) No cycle: both canonicalize and resolve to the SAME real dir.
+        let cdef = fs::canonicalize(&def_dir).unwrap();
+        let cjudy = fs::canonicalize(&judy_dir).unwrap();
+        assert_eq!(cdef, cjudy, "both point at one shared real pool, no loop");
+
+        // (3) Zero rollouts lost: hub (5) + JUDY's displaced backup (1) == 6.
+        let judy_backup = home.path().join(".codex-judy").join("Claude Multiprofile Backups");
+        assert_eq!(count_jsonl_under(&judy_backup), 1, "judy's 1 rollout preserved in backup");
+        assert!(
+            !home.path().join(".codex").join("Claude Multiprofile Backups").exists(),
+            "the hub was never displaced"
+        );
+
+        // (4) Both cells read shared.
+        let rows = list_codex_sessions_library().unwrap();
+        let all = rows.iter().find(|r| r.id == CODEX_ALL_SESSIONS_ID).unwrap();
+        for id in ["default", "profile:judy"] {
+            let c = all.cells.iter().find(|c| c.install_id == id).unwrap();
+            assert_eq!(c.state, "shared", "{id} reads shared after the safe share");
+        }
+
+        match prev_home {
+            Some(v) => std::env::set_var("HOME", v),
+            None => std::env::remove_var("HOME"),
+        }
+        match prev_xdg {
+            Some(v) => std::env::set_var("XDG_CONFIG_HOME", v),
+            None => std::env::remove_var("XDG_CONFIG_HOME"),
+        }
+        if let Some(v) = prev_codex {
+            std::env::set_var("CODEX_HOME", v);
+        }
     }
 
     #[test]

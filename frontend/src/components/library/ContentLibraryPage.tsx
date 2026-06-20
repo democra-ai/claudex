@@ -314,10 +314,10 @@ function SidebarProfileRow({
       <button
         type="button"
         onClick={onLaunch}
-        disabled={busy || running}
+        disabled={busy}
         className="shrink-0 rounded-md p-1 text-muted-foreground opacity-0 transition-all hover:bg-primary/10 hover:text-primary group-hover:opacity-100 disabled:cursor-not-allowed disabled:opacity-40"
-        title={running ? `${profile.name} is already running` : `Launch ${profile.name}`}
-        aria-label={running ? `${profile.name} is already running` : `Launch ${profile.name}`}
+        title={running ? `Open another ${profile.name} window` : `Launch ${profile.name}`}
+        aria-label={running ? `Open another ${profile.name} window` : `Launch ${profile.name}`}
       >
         <Play className="h-3 w-3" />
       </button>
