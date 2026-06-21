@@ -2640,6 +2640,14 @@ pub fn launch_codex_install(install_id: String) -> Result<(), String> {
         let app = install
             .app_path
             .ok_or_else(|| "Default Codex app path is missing".to_string())?;
+        // Pin the default account to the FILE auth backend too, so its OAuth
+        // token lives in ~/.codex/auth.json instead of the GLOBAL macOS keychain
+        // ("auto"). The shared keychain is what let a second account's login
+        // revoke the default's refresh token ("refresh token was revoked").
+        // Best-effort: a parse failure must not block launching.
+        if let Ok(home) = codex_home_dir() {
+            let _ = ensure_codex_file_auth_backend(&home);
+        }
         let mut open = Command::new("/usr/bin/open");
         open.arg(app);
         return run_command(open, "Launch Codex");
