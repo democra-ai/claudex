@@ -699,26 +699,39 @@ export default function ContentLibraryPage() {
     loadInstalls();
   }, [loadInstalls]);
 
-  // Poll running status every 10s so the "live" badge tracks reality
-  // when the user opens/closes Claude.app in another window. The poll
-  // only re-reads the install registry + ps, no heavy session scans.
+  // Keep the "live" badge tracking reality for BOTH Claude desktop AND Codex
+  // accounts: poll every ~4s and refresh immediately when the Claudex window
+  // regains focus (e.g. right after you quit a Codex window). Light — just the
+  // install registry + ps/lsof, no session scans. The previous version polled
+  // only Claude desktop, so Codex stayed stuck "live" after a quit.
   useEffect(() => {
     if (!isTauri()) return;
-    const id = setInterval(() => {
+    const sameRunning = <T extends { is_running: boolean }>(
+      cur: T[],
+      next: T[],
+    ) =>
+      cur.length === next.length &&
+      cur.every((c, i) => c.is_running === next[i]?.is_running);
+    const refreshRunning = () => {
       api
         .listDesktopInstalls()
-        .then((list) => {
-          // Only update if the running-state diff actually changed —
-          // avoids unnecessary re-renders.
-          setInstalls((current) => {
-            if (current.length !== list.length) return list;
-            const sameRunning = current.every((c, i) => c.is_running === list[i]?.is_running);
-            return sameRunning ? current : list;
-          });
-        })
+        .then((list) => setInstalls((cur) => (sameRunning(cur, list) ? cur : list)))
         .catch(() => undefined);
-    }, 10_000);
-    return () => clearInterval(id);
+      api
+        .listCodexInstalls()
+        .then((list) =>
+          setCodexInstalls((cur) => (sameRunning(cur, list) ? cur : list)),
+        )
+        .catch(() => undefined);
+    };
+    const id = setInterval(refreshRunning, 4_000);
+    window.addEventListener("focus", refreshRunning);
+    document.addEventListener("visibilitychange", refreshRunning);
+    return () => {
+      clearInterval(id);
+      window.removeEventListener("focus", refreshRunning);
+      document.removeEventListener("visibilitychange", refreshRunning);
+    };
   }, []);
 
   useEffect(() => {
