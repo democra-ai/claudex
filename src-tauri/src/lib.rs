@@ -5568,7 +5568,319 @@ fn make_codex_sessions_independent(target_home: &Path) -> Result<bool, String> {
 
 /// Apply the whole-sessions share toggle. Only the synthetic row is actionable;
 /// per-project rows are browse-only (no per-project symlink boundary exists).
+// ===========================================================================
+// Per-SESSION sharing — symlink ONE session file between accounts (the union of
+// the whole-space share, at file granularity). The user's rule: sharing is
+// ALWAYS a live symlink (never a copy — a copy would fork one session into two
+// divergent histories); a session that is still being written ("active") is
+// DISABLED, never auto-copied. Un-share removes the link only (the one real
+// file stays in its owner), so there is never more than one history.
+// ===========================================================================
+
+/// A session is "active" (and therefore not shareable) if it was written within
+/// this window — a running CLI appends every few seconds, so 10 min of silence
+/// is a safe "idle" proxy without inspecting processes.
+const SESSION_ACTIVE_WINDOW_MS: i64 = 10 * 60 * 1000;
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SessionShareCell {
+    pub install_id: String,
+    pub install_name: String,
+    /// shared | independent | absent (from symlink_share_states).
+    pub state: String,
+    /// False when this account's whole session space is symlinked (inherited
+    /// share) — per-session toggles are disabled for it.
+    pub actionable: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SessionShareRow {
+    pub session_id: String,
+    pub title: Option<String>,
+    pub cwd: Option<String>,
+    pub model: Option<String>,
+    pub last_activity_ms: i64,
+    /// True if written within SESSION_ACTIVE_WINDOW_MS — sharing is disabled.
+    pub active: bool,
+    pub cells: Vec<SessionShareCell>,
+}
+
+/// The sessions/projects sub-dir for a session kind.
+fn session_kind_subdir(kind: &str) -> Option<&'static str> {
+    match kind {
+        "codex_sessions" => Some(CODEX_SESSIONS_DIR),
+        "claude_sessions" => Some(CODE_PROJECTS_DIR),
+        _ => None,
+    }
+}
+
+/// (id, name, account_dir) per account for a session kind. The session root is
+/// `account_dir.join(session_kind_subdir)`; account_dir is also the backup base.
+fn session_account_dirs(kind: &str) -> Result<Vec<(String, String, PathBuf)>, String> {
+    match kind {
+        "codex_sessions" => Ok(codex_profile_columns()?
+            .into_iter()
+            .map(|c| (c.id, c.label, c.home))
+            .collect()),
+        "claude_sessions" => claude_session_cols(),
+        _ => Err(format!("Unknown session kind: {kind}")),
+    }
+}
+
+/// True when a session root is itself a symlink (whole-space shared) — its
+/// individual sessions are inherited-shared and can't be toggled one by one.
+fn root_is_symlinked(root: &Path) -> bool {
+    fs::symlink_metadata(root)
+        .map(|m| m.file_type().is_symlink())
+        .unwrap_or(false)
+}
+
+/// Reject a session rel path that isn't a plain in-root .jsonl (no `..`, no
+/// absolute/prefix components) — defense in depth so a garbled session id can
+/// never make a backup or symlink escape the target root.
+fn validate_session_rel(rel: &Path) -> Result<(), String> {
+    use std::path::Component;
+    if rel.as_os_str().is_empty() {
+        return Err("Empty session path".to_string());
+    }
+    if !rel.components().all(|c| matches!(c, Component::Normal(_))) {
+        return Err("Invalid session path".to_string());
+    }
+    if rel.extension().and_then(|x| x.to_str()) != Some("jsonl") {
+        return Err("Not a session file".to_string());
+    }
+    Ok(())
+}
+
+/// Find a session's file (real or symlink) within one account's session root.
+fn session_file_in(kind: &str, account_dir: &Path, session_id: &str) -> Option<PathBuf> {
+    match kind {
+        "codex_sessions" => scan_codex_rollouts(account_dir)
+            .into_iter()
+            .find(|m| m.session_id == session_id)
+            .map(|m| m.path),
+        "claude_sessions" => {
+            let root = account_dir.join(CODE_PROJECTS_DIR);
+            for e in fs::read_dir(&root).ok()?.flatten() {
+                if !e.path().is_dir() {
+                    continue;
+                }
+                let cand = e.path().join(format!("{session_id}.jsonl"));
+                if fs::symlink_metadata(&cand).is_ok() {
+                    return Some(cand);
+                }
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+/// The path of `abs` relative to the account's session root.
+fn session_rel_of(kind: &str, account_dir: &Path, abs: &Path) -> Option<PathBuf> {
+    let root = account_dir.join(session_kind_subdir(kind)?);
+    abs.strip_prefix(&root).ok().map(|p| p.to_path_buf())
+}
+
+/// Symlink ONE session file from `source_file` (a real file) into `target_file`.
+/// Non-destructive: backs up any existing real target first; never touches the
+/// source. Idempotent. A cross-account same-rel link can't cycle (distinct
+/// roots), but the canonical guard is kept as defense in depth.
+fn share_one_session(
+    source_file: &Path,
+    target_file: &Path,
+    target_data_dir: &Path,
+) -> Result<bool, String> {
+    if !is_real_file(source_file) {
+        return Err("Source session is not a real file — nothing to share.".to_string());
+    }
+    if path_points_to(target_file, source_file) {
+        return Ok(false); // already linked
+    }
+    if let (Ok(rs), Some(rt)) = (fs::canonicalize(source_file), real_dir_of(target_file)) {
+        if rs == rt {
+            return Ok(false);
+        }
+    }
+    if let Some(parent) = target_file.parent() {
+        fs::create_dir_all(parent).map_err(|e| format!("Create {}: {e}", parent.display()))?;
+    }
+    if fs::symlink_metadata(target_file).is_ok() {
+        backup_existing_path(target_file, target_data_dir, "session")?;
+    }
+    symlink_path(source_file, target_file)?;
+    Ok(true)
+}
+
+/// Apply a per-session share toggle. `change.row_id` is `sess:<projectRowId>:<session_id>`.
+/// Sharing is symlink-only; un-share removes the link (the one real file stays
+/// with its owner — never copied back, so a session never forks into two histories).
+fn apply_one_session_share(kind: &str, change: &LibraryCellChange) -> Result<bool, String> {
+    // session_id is the last `:`-segment (project ids are cwd paths that may
+    // themselves contain ':', so split from the right; a rollout/UUID id has none).
+    let session_id = change
+        .row_id
+        .rsplit_once(':')
+        .map(|(_, s)| s.to_string())
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| "Malformed session row id".to_string())?;
+    let subdir = session_kind_subdir(kind).ok_or_else(|| "Unknown session kind".to_string())?;
+    let cols = session_account_dirs(kind)?;
+    let target_dir = cols
+        .iter()
+        .find(|(id, _, _)| id == &change.target_install_id)
+        .map(|(_, _, d)| d.clone())
+        .ok_or_else(|| format!("Unknown account: {}", change.target_install_id))?;
+    let target_root = target_dir.join(subdir);
+    if root_is_symlinked(&target_root) {
+        return Err("This account shares its whole session space — per-session sharing is disabled here. Un-share the whole space first.".to_string());
+    }
+    // Owner = an account (with a non-symlinked root) that holds a REAL file for
+    // this session. rel is recomputed from the owner's own scan, never trusted
+    // from the client.
+    let owner = cols.iter().find_map(|(id, _, dir)| {
+        let root = dir.join(subdir);
+        if root_is_symlinked(&root) {
+            return None;
+        }
+        let abs = session_file_in(kind, dir, &session_id)?;
+        is_real_file(&abs).then(|| (id.clone(), dir.clone(), abs))
+    });
+    let (owner_id, owner_dir, owner_abs) =
+        owner.ok_or_else(|| "No account holds this session to share.".to_string())?;
+    let rel = session_rel_of(kind, &owner_dir, &owner_abs)
+        .ok_or_else(|| "Cannot resolve session path".to_string())?;
+    validate_session_rel(&rel)?;
+    let target_file = target_root.join(&rel);
+
+    if change.wants {
+        if owner_id == change.target_install_id {
+            return Ok(false); // the owner already has the real file
+        }
+        share_one_session(&owner_abs, &target_file, &target_dir)
+    } else {
+        let target_is_link = fs::symlink_metadata(&target_file)
+            .map(|m| m.file_type().is_symlink())
+            .unwrap_or(false);
+        if target_is_link {
+            remove_path(&target_file)?; // remove the link only; source untouched
+            Ok(true)
+        } else if owner_id == change.target_install_id {
+            // Un-sharing from the owner cell: detach every sibling linking to it.
+            let mut changed = false;
+            for (id, _, dir) in &cols {
+                if id == &owner_id {
+                    continue;
+                }
+                let sib = dir.join(subdir).join(&rel);
+                if path_points_to(&sib, &owner_abs) {
+                    remove_path(&sib)?;
+                    changed = true;
+                }
+            }
+            Ok(changed)
+        } else {
+            Ok(false)
+        }
+    }
+}
+
+/// Build the per-session share grid for one project: every session in the
+/// project across all accounts, each with a per-account share cell + an
+/// `active` flag (disables sharing while a session may still be written).
+pub fn list_session_share_grid(
+    kind: String,
+    project_id: String,
+) -> Result<Vec<SessionShareRow>, String> {
+    let subdir = session_kind_subdir(&kind).ok_or_else(|| "Unknown session kind".to_string())?;
+    let cols = session_account_dirs(&kind)?;
+    let now = system_time_to_epoch_ms(std::time::SystemTime::now());
+
+    // session_id -> (title, cwd, model, max last_activity, rel)
+    let mut meta: std::collections::BTreeMap<
+        String,
+        (Option<String>, Option<String>, Option<String>, i64, PathBuf),
+    > = std::collections::BTreeMap::new();
+
+    for (id, _, account_dir) in &cols {
+        if kind == "codex_sessions" {
+            for m in scan_codex_rollouts(account_dir)
+                .into_iter()
+                .filter(|m| m.cwd == project_id)
+            {
+                let Some(rel) = session_rel_of(&kind, account_dir, &m.path) else {
+                    continue;
+                };
+                let e = meta.entry(m.session_id.clone()).or_insert_with(|| {
+                    (
+                        read_codex_session_title(&m.path),
+                        Some(m.cwd.clone()),
+                        m.model.clone(),
+                        m.last_activity_ms,
+                        rel,
+                    )
+                });
+                if m.last_activity_ms > e.3 {
+                    e.3 = m.last_activity_ms;
+                }
+            }
+        } else {
+            for s in list_claude_sessions_for_project(id.clone(), project_id.clone())? {
+                let Some(abs) = session_file_in(&kind, account_dir, &s.session_id) else {
+                    continue;
+                };
+                let Some(rel) = session_rel_of(&kind, account_dir, &abs) else {
+                    continue;
+                };
+                let e = meta.entry(s.session_id.clone()).or_insert_with(|| {
+                    (s.title.clone(), s.cwd.clone(), s.model.clone(), s.last_activity_ms, rel)
+                });
+                if s.last_activity_ms > e.3 {
+                    e.3 = s.last_activity_ms;
+                }
+            }
+        }
+    }
+
+    let root_symlinked: Vec<bool> = cols
+        .iter()
+        .map(|(_, _, d)| root_is_symlinked(&d.join(subdir)))
+        .collect();
+
+    let mut rows: Vec<SessionShareRow> = Vec::new();
+    for (sid, (title, cwd, model, last, rel)) in meta {
+        let paths: Vec<PathBuf> = cols.iter().map(|(_, _, d)| d.join(subdir).join(&rel)).collect();
+        let present: Vec<bool> = paths.iter().map(|p| fs::symlink_metadata(p).is_ok()).collect();
+        let states = symlink_share_states(&paths, &present);
+        let cells: Vec<SessionShareCell> = cols
+            .iter()
+            .enumerate()
+            .map(|(i, (cid, cname, _))| SessionShareCell {
+                install_id: cid.clone(),
+                install_name: cname.clone(),
+                state: if present[i] { states[i].to_string() } else { "absent".to_string() },
+                actionable: !root_symlinked[i],
+            })
+            .collect();
+        let active = last > 0 && now - last < SESSION_ACTIVE_WINDOW_MS;
+        rows.push(SessionShareRow {
+            session_id: sid,
+            title,
+            cwd,
+            model,
+            last_activity_ms: last,
+            active,
+            cells,
+        });
+    }
+    rows.sort_by_key(|r| -r.last_activity_ms);
+    Ok(rows)
+}
+
 fn apply_codex_sessions_share(change: &LibraryCellChange) -> Result<bool, String> {
+    if change.row_id.starts_with("sess:") {
+        return apply_one_session_share("codex_sessions", change);
+    }
     if change.row_id != CODEX_ALL_SESSIONS_ID {
         return Err(
             "Per-project Codex rows are browse-only — toggle 'All Codex sessions' to share, or drill in to import a session."
@@ -5841,6 +6153,9 @@ fn share_claude_sessions(source_config: &Path, target_config: &Path) -> Result<b
 }
 
 fn apply_claude_sessions_share(change: &LibraryCellChange) -> Result<bool, String> {
+    if change.row_id.starts_with("sess:") {
+        return apply_one_session_share("claude_sessions", change);
+    }
     if change.row_id != CODEX_ALL_SESSIONS_ID {
         return Err(
             "Per-project Claude rows are browse-only — toggle 'All Claude sessions' to share, or export one in Share."
@@ -8530,6 +8845,14 @@ mod commands {
     }
 
     #[tauri::command]
+    pub fn list_session_share_grid(
+        kind: String,
+        project_id: String,
+    ) -> Result<Vec<SessionShareRow>, String> {
+        super::list_session_share_grid(kind, project_id)
+    }
+
+    #[tauri::command]
     pub fn list_claude_skills_library() -> Result<Vec<LibraryRow>, String> {
         super::list_claude_skills_library()
     }
@@ -8734,6 +9057,7 @@ pub fn run() {
             commands::list_codex_sessions_for_project,
             commands::list_claude_sessions_library,
             commands::list_claude_sessions_for_project,
+            commands::list_session_share_grid,
             commands::list_claude_skills_library,
             commands::list_codex_preferences_library,
             commands::read_text_file,
@@ -10461,6 +10785,103 @@ mod tests {
         if let Some(v) = prev_codex {
             std::env::set_var("CODEX_HOME", v);
         }
+    }
+
+    /// PER-SESSION share: toggling one session symlinks ONLY that file into the
+    /// target; the owner's real file is untouched; un-share removes the link and
+    /// the one real file stays with the owner (never copied → never forks).
+    #[test]
+    fn e2e_per_session_share_and_unshare_codex() {
+        let _env = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let home = tempfile::tempdir().unwrap();
+        let prev_home = std::env::var_os("HOME");
+        let prev_xdg = std::env::var_os("XDG_CONFIG_HOME");
+        let prev_codex = std::env::var_os("CODEX_HOME");
+        std::env::set_var("HOME", home.path());
+        std::env::set_var("XDG_CONFIG_HOME", home.path().join(".config"));
+        std::env::remove_var("CODEX_HOME");
+
+        // default (~/.codex) owns one rollout for project /Users/x/proj.
+        let def_day = home.path().join(".codex/sessions/2026/06/17");
+        fs::create_dir_all(&def_day).unwrap();
+        let owner_file = def_day.join("rollout-A.jsonl");
+        fs::write(&owner_file, "{\"payload\":{\"id\":\"sid-A\",\"cwd\":\"/Users/x/proj\"}}\n").unwrap();
+        // judy exists as a column with its own (empty) real sessions dir.
+        fs::create_dir_all(home.path().join(".codex-judy/sessions")).unwrap();
+        let reg = home.path().join(".config/claude-multiprofile");
+        fs::create_dir_all(&reg).unwrap();
+        fs::write(
+            reg.join("profiles.json"),
+            r#"{"version":1,"profiles":[{"name":"judy","type":"both","desktop":null,"code":null,"codex":{"dataDir":"x","codexHome":"x","launcherPath":"x","codexAppPath":"x"},"createdAt":"2026-01-01T00:00:00Z"}]}"#,
+        )
+        .unwrap();
+
+        let row_id = "sess:/Users/x/proj:sid-A".to_string();
+        let judy_file = home.path().join(".codex-judy/sessions/2026/06/17/rollout-A.jsonl");
+
+        // SHARE the one session onto judy.
+        apply_library_changes(
+            "codex_sessions".to_string(),
+            vec![LibraryCellChange { row_id: row_id.clone(), target_install_id: "profile:judy".into(), wants: true, source_install_id: None }],
+        ).unwrap();
+        assert!(fs::symlink_metadata(&judy_file).unwrap().file_type().is_symlink(), "judy gets a symlink to the one session");
+        assert_eq!(fs::read_link(&judy_file).unwrap(), owner_file, "symlink points at the owner's real file");
+        assert!(is_real_file(&owner_file), "owner's real file untouched");
+        // grid reads both shared for this session.
+        let grid = list_session_share_grid("codex_sessions".into(), "/Users/x/proj".into()).unwrap();
+        let r = grid.iter().find(|r| r.session_id == "sid-A").unwrap();
+        for id in ["default", "profile:judy"] {
+            assert_eq!(r.cells.iter().find(|c| c.install_id == id).unwrap().state, "shared");
+        }
+
+        // UN-SHARE: link removed, owner keeps the one real file (no fork).
+        apply_library_changes(
+            "codex_sessions".to_string(),
+            vec![LibraryCellChange { row_id: row_id.clone(), target_install_id: "profile:judy".into(), wants: false, source_install_id: None }],
+        ).unwrap();
+        assert!(fs::symlink_metadata(&judy_file).is_err(), "judy's link removed on un-share");
+        assert!(is_real_file(&owner_file), "owner still has the one real file");
+
+        match prev_home { Some(v) => std::env::set_var("HOME", v), None => std::env::remove_var("HOME") }
+        match prev_xdg { Some(v) => std::env::set_var("XDG_CONFIG_HOME", v), None => std::env::remove_var("XDG_CONFIG_HOME") }
+        if let Some(v) = prev_codex { std::env::set_var("CODEX_HOME", v) }
+    }
+
+    /// Per-session share is REFUSED (no mutation) when the target's whole session
+    /// space is already symlinked — you can't drop an individual link inside a
+    /// symlinked dir without mutating the shared source pool.
+    #[test]
+    fn per_session_share_refused_when_whole_space_shared() {
+        let _env = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let home = tempfile::tempdir().unwrap();
+        let prev_home = std::env::var_os("HOME");
+        let prev_xdg = std::env::var_os("XDG_CONFIG_HOME");
+        let prev_codex = std::env::var_os("CODEX_HOME");
+        std::env::set_var("HOME", home.path());
+        std::env::set_var("XDG_CONFIG_HOME", home.path().join(".config"));
+        std::env::remove_var("CODEX_HOME");
+
+        let def_day = home.path().join(".codex/sessions/2026/06/17");
+        fs::create_dir_all(&def_day).unwrap();
+        fs::write(def_day.join("rollout-A.jsonl"), "{\"payload\":{\"id\":\"sid-A\",\"cwd\":\"/Users/x/proj\"}}\n").unwrap();
+        // judy's WHOLE sessions dir is a symlink to default's (whole-space shared).
+        fs::create_dir_all(home.path().join(".codex-judy")).unwrap();
+        std::os::unix::fs::symlink(home.path().join(".codex/sessions"), home.path().join(".codex-judy/sessions")).unwrap();
+        let reg = home.path().join(".config/claude-multiprofile");
+        fs::create_dir_all(&reg).unwrap();
+        fs::write(reg.join("profiles.json"), r#"{"version":1,"profiles":[{"name":"judy","type":"both","desktop":null,"code":null,"codex":{"dataDir":"x","codexHome":"x","launcherPath":"x","codexAppPath":"x"},"createdAt":"2026-01-01T00:00:00Z"}]}"#).unwrap();
+
+        let res = apply_library_changes(
+            "codex_sessions".to_string(),
+            vec![LibraryCellChange { row_id: "sess:/Users/x/proj:sid-A".into(), target_install_id: "profile:judy".into(), wants: true, source_install_id: None }],
+        );
+        assert!(res.is_err(), "per-session share refused while whole-space shared");
+        // judy's sessions is still exactly the symlink (untouched).
+        assert!(fs::symlink_metadata(home.path().join(".codex-judy/sessions")).unwrap().file_type().is_symlink());
+
+        match prev_home { Some(v) => std::env::set_var("HOME", v), None => std::env::remove_var("HOME") }
+        match prev_xdg { Some(v) => std::env::set_var("XDG_CONFIG_HOME", v), None => std::env::remove_var("XDG_CONFIG_HOME") }
+        if let Some(v) = prev_codex { std::env::set_var("CODEX_HOME", v) }
     }
 
     #[test]

@@ -11,6 +11,7 @@ import type {
   LibraryKind,
   LibraryRow,
   LocalSession,
+  SessionShareRow,
   ProfileStats,
   PairCodeProjectShare,
   PairCodeShareChange,
@@ -289,6 +290,15 @@ export const api = {
     projectId: string,
   ): Promise<LocalSession[]> {
     return invoke("list_claude_sessions_for_project", { installId, projectId });
+  },
+
+  /** Per-session share grid for one project: each session × account with its
+   *  share state + an `active` flag. kind = "codex_sessions" | "claude_sessions". */
+  listSessionShareGrid(
+    kind: string,
+    projectId: string,
+  ): Promise<SessionShareRow[]> {
+    return invoke("list_session_share_grid", { kind, projectId });
   },
 
   // -------- Content view / edit / delete --------

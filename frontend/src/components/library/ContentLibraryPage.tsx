@@ -18,6 +18,7 @@ import { KindNav, computeKindCount } from "./KindNav";
 import { Matrix } from "./Matrix";
 import { pendingKeyFor, type PendingChange } from "./pending";
 import { DetailSheet, SessionList, type Selection } from "./DetailSheet";
+import { SessionShareGrid } from "./SessionShareGrid";
 import { PendingBar } from "./PendingBar";
 import { ClaudeMark, CodexMark } from "./PlatformMarks";
 import { profileColorVars } from "@/lib/profileColor";
@@ -419,6 +420,8 @@ export default function ContentLibraryPage() {
   // some row ids contain colons (preferences "scope:key"), so any string split
   // would corrupt them. The key uses a  delimiter that can't collide.
   const [pending, setPending] = useState<Map<string, PendingChange>>(new Map());
+  // Bumped after Apply so expanded per-session grids reload their share state.
+  const [gridNonce, setGridNonce] = useState(0);
   const [selection, setSelection] = useState<Selection>(null);
   const [busy, setBusy] = useState(false);
   const [applying, setApplying] = useState(false);
@@ -734,6 +737,22 @@ export default function ContentLibraryPage() {
     [rowsByKind, activeKind],
   );
 
+  // Per-session share toggle (from the expanded SessionShareGrid). Stages a
+  // `sess:<projectId>:<session_id>` change into the same pending bar; clicking
+  // back to the real state drops it. `currentShared` is the on-disk state.
+  const handleSessionToggle = useCallback(
+    (rowId: string, installId: string, currentShared: boolean, wants: boolean) => {
+      const key = pendingKeyFor(rowId, installId);
+      setPending((current) => {
+        const next = new Map(current);
+        if (wants === currentShared) next.delete(key);
+        else next.set(key, { rowId, installId, wants });
+        return next;
+      });
+    },
+    [],
+  );
+
   const handleApply = useCallback(async () => {
     if (pending.size === 0) return;
     const changes: LibraryCellChange[] = [];
@@ -750,6 +769,7 @@ export default function ContentLibraryPage() {
         "success",
       );
       setPending(new Map());
+      setGridNonce((n) => n + 1); // reload any open per-session grids
       await loadKind(activeKind);
       // Also refresh counts so KindNav stays accurate.
       const others = COUNTED_KINDS.filter((k) => k !== activeKind);
@@ -973,6 +993,18 @@ export default function ContentLibraryPage() {
       }
       return (
         <div className="space-y-3">
+          {/* Per-session share grid (Codex/Claude only, project rows). Toggle
+           *  whether an INDIVIDUAL session is symlink-shared across accounts. */}
+          {!isAllRow &&
+          (activeKind === "codex_sessions" || activeKind === "claude_sessions") ? (
+            <SessionShareGrid
+              kind={activeKind}
+              projectId={row.id}
+              pending={pending}
+              onToggle={handleSessionToggle}
+              refreshKey={gridNonce}
+            />
+          ) : null}
           {present.map((cell) => {
             const name = resolveInstallName(cell.install_id) ?? cell.install_name;
             return (
@@ -1029,6 +1061,9 @@ export default function ContentLibraryPage() {
       handleImportCodexSession,
       handleExportClaudeSession,
       loadKind,
+      pending,
+      handleSessionToggle,
+      gridNonce,
     ],
   );
 

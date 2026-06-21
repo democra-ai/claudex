@@ -270,6 +270,27 @@ export type LibraryCellChange = {
   source_install_id?: string;
 };
 
+/** One account's share state for a single session in the per-session grid. */
+export type SessionShareCell = {
+  install_id: string;
+  install_name: string;
+  state: CellState;
+  /** False when this account's whole session space is symlinked — toggle disabled. */
+  actionable: boolean;
+};
+
+/** One session row in the per-session share grid (session × accounts). */
+export type SessionShareRow = {
+  session_id: string;
+  title: string | null;
+  cwd: string | null;
+  model: string | null;
+  last_activity_ms: number;
+  /** Written recently — sharing is disabled to avoid two accounts co-writing it. */
+  active: boolean;
+  cells: SessionShareCell[];
+};
+
 export type LibraryKind =
   | "code_history"
   | "cowork_sessions"
