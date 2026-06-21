@@ -7589,13 +7589,89 @@ pub fn apply_library_changes(
     let mut copied = 0;
     let mut skipped = 0;
     for change in changes {
-        match apply_library_change(kind.clone(), change) {
-            Ok(true) => copied += 1,
-            Ok(false) => skipped += 1,
-            Err(e) => return Err(e),
+        if change.row_id == ALL_ITEMS_ROW_ID {
+            // "All" row: expand to every shareable item for this account and
+            // apply tolerantly — one item that lacks a source (or a copy-kind
+            // collision) is skipped, never aborting the whole batch.
+            for ic in expand_all_change(&kind, &change)? {
+                match apply_library_change(kind.clone(), ic) {
+                    Ok(true) => copied += 1,
+                    _ => skipped += 1,
+                }
+            }
+        } else {
+            match apply_library_change(kind.clone(), change) {
+                Ok(true) => copied += 1,
+                Ok(false) => skipped += 1,
+                Err(e) => return Err(e),
+            }
         }
     }
     Ok(CopySummary { copied, skipped })
+}
+
+/// Synthetic row id for the "All" toggle that shares/un-shares a whole kind.
+const ALL_ITEMS_ROW_ID: &str = "__all__";
+
+/// List the item rows backing a content kind (for "All" expansion + source
+/// discovery). Sessions are excluded (they have their own whole-space row).
+fn list_rows_for_kind(kind: &str) -> Result<Vec<LibraryRow>, String> {
+    match kind {
+        "skills" => list_skills_library(),
+        "claude_skills" => list_claude_skills_library(),
+        "codex_skills" => list_codex_skills_library(),
+        "memory" => list_claude_memory_library(),
+        "codex_memory" => list_codex_memory_library(),
+        "memory_cross" => list_memory_library(),
+        "mcp_cross" => list_mcp_cross_library(),
+        "codex_mcp" => list_codex_mcp_library(),
+        "mcp_servers" => list_mcp_library(),
+        "preferences" => list_preferences_library(),
+        "codex_preferences" => list_codex_preferences_library(),
+        "extensions" => list_extensions_library_grid(),
+        "cowork_skills" => list_cowork_skills_library(),
+        _ => Err(format!("\"All\" sharing isn't available for {kind}.")),
+    }
+}
+
+/// Expand an "All" toggle into per-item changes: for share, every item the
+/// target doesn't already share AND that some other account holds (so a source
+/// exists); for un-share, every item the target currently shares. Skips items
+/// with no valid operation, so the tolerant apply never errors spuriously.
+fn expand_all_change(kind: &str, change: &LibraryCellChange) -> Result<Vec<LibraryCellChange>, String> {
+    let rows = list_rows_for_kind(kind)?;
+    let mut out = Vec::new();
+    for row in &rows {
+        if row.id == ALL_ITEMS_ROW_ID || row.id == CODEX_ALL_SESSIONS_ID || !row.interactive {
+            continue;
+        }
+        let Some(cell) = row.cells.iter().find(|c| c.install_id == change.target_install_id) else {
+            continue;
+        };
+        let is_shared = cell.state == "shared" || cell.state == "copied";
+        if change.wants {
+            let has_source = row
+                .cells
+                .iter()
+                .any(|c| c.install_id != change.target_install_id && c.present);
+            if !is_shared && has_source {
+                out.push(LibraryCellChange {
+                    row_id: row.id.clone(),
+                    target_install_id: change.target_install_id.clone(),
+                    wants: true,
+                    source_install_id: None,
+                });
+            }
+        } else if is_shared {
+            out.push(LibraryCellChange {
+                row_id: row.id.clone(),
+                target_install_id: change.target_install_id.clone(),
+                wants: false,
+                source_install_id: None,
+            });
+        }
+    }
+    Ok(out)
 }
 
 // ----- Local session scanning -----
@@ -10882,6 +10958,50 @@ mod tests {
         match prev_home { Some(v) => std::env::set_var("HOME", v), None => std::env::remove_var("HOME") }
         match prev_xdg { Some(v) => std::env::set_var("XDG_CONFIG_HOME", v), None => std::env::remove_var("XDG_CONFIG_HOME") }
         if let Some(v) = prev_codex { std::env::set_var("CODEX_HOME", v) }
+    }
+
+    /// The synthetic "All" row shares EVERY item of a kind in one toggle, and
+    /// un-shares them all again. Exercised on claude_skills (symlink share).
+    #[test]
+    fn e2e_all_row_shares_and_unshares_every_skill() {
+        let _env = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let home = tempfile::tempdir().unwrap();
+        let prev_home = std::env::var_os("HOME");
+        let prev_xdg = std::env::var_os("XDG_CONFIG_HOME");
+        std::env::set_var("HOME", home.path());
+        std::env::set_var("XDG_CONFIG_HOME", home.path().join(".config"));
+
+        // default (~/.claude) holds two skills; judy holds none.
+        for s in ["skA", "skB"] {
+            let d = home.path().join(".claude/skills").join(s);
+            fs::create_dir_all(&d).unwrap();
+            fs::write(d.join("SKILL.md"), "# skill").unwrap();
+        }
+        let reg = home.path().join(".config/claude-multiprofile");
+        fs::create_dir_all(&reg).unwrap();
+        fs::write(reg.join("profiles.json"), r#"{"version":1,"profiles":[{"name":"judy","type":"both","desktop":null,"code":null,"codex":null,"createdAt":"2026-01-01T00:00:00Z"}]}"#).unwrap();
+
+        // SHARE ALL onto judy.
+        apply_library_changes(
+            "claude_skills".to_string(),
+            vec![LibraryCellChange { row_id: ALL_ITEMS_ROW_ID.to_string(), target_install_id: "profile:judy".into(), wants: true, source_install_id: None }],
+        ).unwrap();
+        for s in ["skA", "skB"] {
+            let link = home.path().join(".claude-judy/skills").join(s);
+            assert!(fs::symlink_metadata(&link).unwrap().file_type().is_symlink(), "{s} shared into judy");
+        }
+
+        // UN-SHARE ALL.
+        apply_library_changes(
+            "claude_skills".to_string(),
+            vec![LibraryCellChange { row_id: ALL_ITEMS_ROW_ID.to_string(), target_install_id: "profile:judy".into(), wants: false, source_install_id: None }],
+        ).unwrap();
+        for s in ["skA", "skB"] {
+            assert!(fs::symlink_metadata(home.path().join(".claude-judy/skills").join(s)).is_err(), "{s} unshared");
+        }
+
+        match prev_home { Some(v) => std::env::set_var("HOME", v), None => std::env::remove_var("HOME") }
+        match prev_xdg { Some(v) => std::env::set_var("XDG_CONFIG_HOME", v), None => std::env::remove_var("XDG_CONFIG_HOME") }
     }
 
     #[test]

@@ -7,9 +7,11 @@ import { cn } from "@/lib/utils";
 import { api, isTauri } from "@/lib/api";
 import { useToasts } from "@/hooks/useToast";
 import type {
+  CellState,
   CodeInstall,
   CodexInstall,
   DesktopInstall,
+  LibraryCell,
   LibraryCellChange,
   LibraryKind,
   LibraryRow,
@@ -386,6 +388,62 @@ const CLAUDE_KINDS: LibraryKind[] = [
   "preferences",
 ];
 
+/** Synthetic "All" row id — toggling it shares/un-shares the whole kind. */
+const ALL_ROW_ID = "__all__";
+
+/** Aggregate per-account state across a kind's item cells for the "All" row. */
+function aggregateAllState(cells: (LibraryCell | undefined)[]): CellState {
+  const present = cells.filter((c): c is LibraryCell => !!c && c.present);
+  if (present.length === 0) return "absent";
+  if (present.every((c) => c.state === "shared")) return "shared";
+  if (present.every((c) => c.state === "copied")) return "copied";
+  if (present.some((c) => c.state === "shared" || c.state === "copied"))
+    return "diverged"; // partially shared
+  return "independent";
+}
+
+/** Prepend a synthetic "All" row (share the whole kind in one click), mirroring
+ *  the backend whole-space row that sessions already have. Skipped for sessions
+ *  (own backend row) and import/export-only kinds. */
+function withAllRow(rows: LibraryRow[], kind: LibraryKind): LibraryRow[] {
+  if (
+    kind === "codex_sessions" ||
+    kind === "claude_sessions" ||
+    kind === "sessions_cross"
+  )
+    return rows;
+  // Only the real item rows count (e.g. memory's project rows are interactive).
+  const items = rows.filter((r) => r.interactive && r.id !== ALL_ROW_ID);
+  if (items.length === 0) return rows;
+  const cols = items[0].cells;
+  const cells: LibraryCell[] = cols.map((col) => {
+    const itemCells = items.map((r) =>
+      r.cells.find((c) => c.install_id === col.install_id),
+    );
+    const present = itemCells.filter((c): c is LibraryCell => !!c && c.present);
+    const shared = present.filter(
+      (c) => c.state === "shared" || c.state === "copied",
+    ).length;
+    return {
+      ...col,
+      state: aggregateAllState(itemCells),
+      present: present.length > 0,
+      detail: `${shared}/${items.length} shared`,
+      digest: null,
+      link_target_digest: null,
+    };
+  });
+  const allRow: LibraryRow = {
+    id: ALL_ROW_ID,
+    label: "All",
+    description: "Share every item below in one click.",
+    cells,
+    interactive: true,
+    group: "All",
+  };
+  return [allRow, ...rows];
+}
+
 /** Every kind shown across all tabs — used for background count loading +
  *  post-apply refresh. Keep in sync with CLAUDE_KINDS / CODEX_KINDS / Share. */
 const COUNTED_KINDS: LibraryKind[] = [
@@ -701,6 +759,26 @@ export default function ContentLibraryPage() {
   const handleCellToggle = useCallback(
     (rowId: string, installId: string, wantsShared: boolean) => {
       const rows = rowsByKind[activeKind];
+      // The synthetic "All" row isn't in rowsByKind — stage it directly. Its
+      // current shared-ness is the aggregate of the real item cells, so a click
+      // back to that aggregate drops the pending entry.
+      if (rowId === ALL_ROW_ID) {
+        const present = (rows ?? [])
+          .filter((r) => r.interactive)
+          .map((r) => r.cells.find((c) => c.install_id === installId))
+          .filter((c): c is LibraryCell => !!c && c.present);
+        const aggShared =
+          present.length > 0 &&
+          present.every((c) => c.state === "shared" || c.state === "copied");
+        const key = pendingKeyFor(rowId, installId);
+        setPending((current) => {
+          const next = new Map(current);
+          if (wantsShared === aggShared) next.delete(key);
+          else next.set(key, { rowId, installId, wants: wantsShared });
+          return next;
+        });
+        return;
+      }
       const row = rows?.find((r) => r.id === rowId);
       const cell = row?.cells.find((c) => c.install_id === installId);
       if (!cell) return;
@@ -1145,7 +1223,7 @@ export default function ContentLibraryPage() {
     }
   }, []);
 
-  const activeRows = rowsByKind[activeKind] ?? [];
+  const activeRows = withAllRow(rowsByKind[activeKind] ?? [], activeKind);
   const selectedRowId =
     selection?.type === "row" ? selection.row.id : null;
   const selectedInstallId =
