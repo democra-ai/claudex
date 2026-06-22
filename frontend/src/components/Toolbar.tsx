@@ -1,4 +1,4 @@
-import { Moon, RefreshCw, Sun, SunMoon } from "lucide-react";
+import { Moon, RefreshCw, Shield, Sun, SunMoon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
 import { useTheme } from "@/hooks/useTheme";
@@ -11,6 +11,7 @@ import {
 interface ToolbarProps {
   onRefresh: () => void;
   busy: boolean;
+  onOpenBackups: () => void;
 }
 
 /**
@@ -18,7 +19,7 @@ interface ToolbarProps {
  * floating PendingBar inside the page body — keeping it out of the chrome
  * means the user's hand stays close to the matrix when toggling.
  */
-export function Toolbar({ onRefresh, busy }: ToolbarProps) {
+export function Toolbar({ onRefresh, busy, onOpenBackups }: ToolbarProps) {
   const { theme, toggle } = useTheme();
   const ThemeIcon = theme === "dark" ? Moon : theme === "light" ? Sun : SunMoon;
 
@@ -73,6 +74,20 @@ export function Toolbar({ onRefresh, busy }: ToolbarProps) {
             </Button>
           </TooltipTrigger>
           <TooltipContent>Theme: {theme}</TooltipContent>
+        </Tooltip>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={onOpenBackups}
+              aria-label="Backups and restore"
+              className="h-7 w-7 rounded-md"
+            >
+              <Shield className="h-3.5 w-3.5" />
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent>Backups &amp; restore</TooltipContent>
         </Tooltip>
         <Separator orientation="vertical" className="h-4" />
         <Button

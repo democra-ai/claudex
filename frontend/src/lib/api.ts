@@ -348,6 +348,46 @@ export const api = {
   getProfileStats(installId: string): Promise<ProfileStats> {
     return invoke("get_profile_stats", { installId });
   },
+
+  // ---- Local snapshot backups (data safety for share/apply) ----
+  listBackups(): Promise<BackupManifest[]> {
+    return invoke("list_backups");
+  },
+  createBackup(reason: string, label: string): Promise<BackupManifest> {
+    return invoke("create_backup", { reason, label });
+  },
+  restoreBackup(id: string): Promise<RestoreSummary> {
+    return invoke("restore_backup", { id });
+  },
+};
+
+/** A timestamped local snapshot of all managed content. */
+export type BackupManifest = {
+  id: string;
+  createdAtMs: number;
+  reason: string; // "startup" | "before-apply" | "before-restore" | "manual"
+  label: string;
+  totalFiles: number;
+  totalBytes: number;
+  entries: unknown[];
+};
+
+export type RestoreSummary = {
+  id: string;
+  createdAtMs: number;
+  restored: number;
+  relinked: number;
+  relinkSkipped: number;
+};
+
+/** Payload emitted on the `claudex://backup` event after a snapshot is taken. */
+export type BackupEvent = {
+  id: string;
+  createdAtMs: number;
+  reason: string;
+  label: string;
+  totalFiles: number;
+  totalBytes: number;
 };
 
 /** True when running inside the Tauri shell, false in a plain `vite preview`. */

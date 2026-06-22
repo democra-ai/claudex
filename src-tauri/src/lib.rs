@@ -8637,8 +8637,430 @@ pub fn get_profile_stats(install_id: String) -> Result<ProfileStats, String> {
     })
 }
 
+// ============================================================================
+// Local snapshot backups — data-safety for destructive share/apply operations.
+//
+// Sharing rewires real directories into symlinks; a bad Apply can lose data.
+// Before every Apply (and once at startup) we snapshot ALL managed content —
+// sessions, skills, memory, MCP, preferences across every profile — into a
+// timestamped, DEREFERENCED (real-bytes) copy under the registry config dir,
+// and expose a restore path. Snapshots are cheap because the content is text.
+// ============================================================================
+
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct BackupEntry {
+    pub install_kind: String, // "code" | "codex" | "desktop" | "global"
+    pub install_id: String,
+    pub install_name: String,
+    pub rel: String,                  // subpath captured, e.g. "projects", "CLAUDE.md"
+    pub live_path: String,            // absolute path this came from / restores to
+    pub snapshot_rel: String,         // location inside the snapshot's data/ dir
+    pub was_symlink: bool,            // live path was a symlink at snapshot time
+    pub link_target: Option<String>, // its target, for faithful topology restore
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct BackupManifest {
+    pub id: String,
+    pub created_at_ms: i64,
+    pub reason: String, // "startup" | "before-apply" | "before-restore" | "manual"
+    pub label: String,
+    pub entries: Vec<BackupEntry>,
+    pub total_files: u64,
+    pub total_bytes: u64,
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct BackupSummary {
+    pub id: String,
+    pub created_at_ms: i64,
+    pub reason: String,
+    pub label: String,
+    pub total_files: u64,
+    pub total_bytes: u64,
+}
+
+impl From<&BackupManifest> for BackupSummary {
+    fn from(m: &BackupManifest) -> Self {
+        BackupSummary {
+            id: m.id.clone(),
+            created_at_ms: m.created_at_ms,
+            reason: m.reason.clone(),
+            label: m.label.clone(),
+            total_files: m.total_files,
+            total_bytes: m.total_bytes,
+        }
+    }
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct RestoreSummary {
+    pub id: String,
+    pub created_at_ms: i64,
+    pub restored: u64,
+    pub relinked: u64,
+    pub relink_skipped: u64, // shares whose hub target was missing at restore time
+}
+
+fn snapshots_root() -> Result<PathBuf, String> {
+    Ok(config_home()?.join("claude-multiprofile").join("snapshots"))
+}
+
+fn snapshot_dir_id() -> String {
+    // Per-process sequence tiebreaker so two snapshots in the same millisecond
+    // (a burst of applies, or a test loop) never collide on the same dir id.
+    // Timestamp prefix keeps the lexical sort chronological; the counter orders
+    // same-millisecond ids by creation order.
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed) % 10000;
+    format!("{}-{:04}", Utc::now().format("%Y%m%d-%H%M%S%3f"), n)
+}
+
+fn safe_segment(s: &str) -> String {
+    s.chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.' { c } else { '_' })
+        .collect()
+}
+
+struct BackupSource {
+    kind: &'static str,
+    id: String,
+    name: String,
+    base: PathBuf,
+    rels: Vec<&'static str>,
+}
+
+/// Every (install → on-disk base dir → managed subpaths) the backup must cover.
+/// Reuses the same enumerators the UI uses, so a snapshot mirrors exactly what
+/// the user sees and shares.
+fn backup_sources() -> Result<Vec<BackupSource>, String> {
+    let mut out: Vec<BackupSource> = Vec::new();
+    if let Ok(installs) = list_code_installs() {
+        for i in installs {
+            out.push(BackupSource {
+                kind: "code",
+                id: i.id.clone(),
+                name: i.name.clone(),
+                base: PathBuf::from(&i.config_dir),
+                rels: vec!["projects", "skills", "CLAUDE.md", "settings.json", "history.jsonl"],
+            });
+        }
+    }
+    if let Ok(cols) = codex_profile_columns() {
+        for c in cols {
+            out.push(BackupSource {
+                kind: "codex",
+                id: c.id.clone(),
+                name: c.label.clone(),
+                base: c.home.clone(),
+                rels: vec!["sessions", "skills", "AGENTS.md", "config.toml"],
+            });
+        }
+    }
+    if let Ok(installs) = list_desktop_installs() {
+        for d in installs {
+            out.push(BackupSource {
+                kind: "desktop",
+                id: d.id.clone(),
+                name: d.name.clone(),
+                base: PathBuf::from(&d.data_dir),
+                rels: vec!["Claude Extensions", "Claude Extensions Settings"],
+            });
+        }
+    }
+    out.push(BackupSource {
+        kind: "global",
+        id: "registry".into(),
+        name: "Profiles registry".into(),
+        base: config_home()?.join("claude-multiprofile"),
+        rels: vec!["profiles.json"],
+    });
+    if let Ok(home) = home_dir() {
+        out.push(BackupSource {
+            kind: "global",
+            id: "claude-json".into(),
+            name: "Claude global config".into(),
+            base: home,
+            rels: vec![".claude.json"],
+        });
+    }
+    Ok(out)
+}
+
+/// Recursively copy `src` to `dst`, DEREFERENCING symlinks so the snapshot holds
+/// real bytes (a shared spoke is a symlink — we must capture the pooled data, not
+/// a dangling link). Counts files + bytes. Depth-guarded against odd loops.
+fn snapshot_copy(src: &Path, dst: &Path, files: &mut u64, bytes: &mut u64, depth: u32) -> Result<(), String> {
+    if depth > 64 {
+        return Ok(());
+    }
+    let meta = match fs::metadata(src) {
+        Ok(m) => m,
+        Err(_) => return Ok(()), // follows symlinks; dangling/missing → skip
+    };
+    if meta.is_dir() {
+        fs::create_dir_all(dst).map_err(|e| format!("Create {}: {e}", dst.display()))?;
+        let rd = match fs::read_dir(src) {
+            Ok(r) => r,
+            Err(_) => return Ok(()),
+        };
+        for entry in rd.flatten() {
+            snapshot_copy(&entry.path(), &dst.join(entry.file_name()), files, bytes, depth + 1)?;
+        }
+    } else if meta.is_file() {
+        if let Some(p) = dst.parent() {
+            let _ = fs::create_dir_all(p);
+        }
+        fs::copy(src, dst).map_err(|e| format!("Copy {}: {e}", src.display()))?;
+        *files += 1;
+        *bytes += meta.len();
+    }
+    Ok(())
+}
+
+/// Snapshot ALL managed content into a fresh timestamped dir + manifest. Cheap
+/// (text), so we run it before every Apply and once at startup.
+fn create_snapshot(reason: &str, label: &str) -> Result<BackupManifest, String> {
+    create_snapshot_protecting(reason, label, None)
+}
+
+/// As `create_snapshot`, but the trailing prune is told to NEVER delete the
+/// snapshot id given in `protect` — so taking the "before-restore" safety
+/// snapshot can't evict the very snapshot we're about to read back.
+fn create_snapshot_protecting(reason: &str, label: &str, protect: Option<&str>) -> Result<BackupManifest, String> {
+    let id = snapshot_dir_id();
+    let root = snapshots_root()?.join(&id);
+    let data_root = root.join("data");
+    fs::create_dir_all(&data_root).map_err(|e| format!("Create snapshot dir: {e}"))?;
+
+    let mut entries: Vec<BackupEntry> = Vec::new();
+    let mut total_files = 0u64;
+    let mut total_bytes = 0u64;
+
+    for spec in backup_sources()? {
+        for rel in &spec.rels {
+            let live = spec.base.join(rel);
+            let lmeta = match fs::symlink_metadata(&live) {
+                Ok(m) => m,
+                Err(_) => continue, // nothing here for this install
+            };
+            let was_symlink = lmeta.file_type().is_symlink();
+            let link_target = if was_symlink {
+                fs::read_link(&live).ok().map(|p| p.to_string_lossy().to_string())
+            } else {
+                None
+            };
+            let snapshot_rel = format!("{}/{}/{}", spec.kind, safe_segment(&spec.id), rel);
+            let dest = data_root.join(&snapshot_rel);
+            let mut f = 0u64;
+            let mut b = 0u64;
+            snapshot_copy(&live, &dest, &mut f, &mut b, 0)?;
+            total_files += f;
+            total_bytes += b;
+            entries.push(BackupEntry {
+                install_kind: spec.kind.to_string(),
+                install_id: spec.id.clone(),
+                install_name: spec.name.clone(),
+                rel: rel.to_string(),
+                live_path: live.to_string_lossy().to_string(),
+                snapshot_rel,
+                was_symlink,
+                link_target,
+            });
+        }
+    }
+
+    let manifest = BackupManifest {
+        id: id.clone(),
+        created_at_ms: Utc::now().timestamp_millis(),
+        reason: reason.to_string(),
+        label: label.to_string(),
+        entries,
+        total_files,
+        total_bytes,
+    };
+    let json = serde_json::to_string_pretty(&manifest).map_err(|e| format!("Serialize manifest: {e}"))?;
+    fs::write(root.join("manifest.json"), json).map_err(|e| format!("Write manifest: {e}"))?;
+    let _ = prune_snapshots(15, protect);
+    Ok(manifest)
+}
+
+/// Keep only the newest `keep` snapshots (dir names are timestamp-prefixed, so a
+/// lexical sort is chronological). Bounds disk use. Never deletes `protect` —
+/// the snapshot a concurrent restore is reading back.
+fn prune_snapshots(keep: usize, protect: Option<&str>) -> Result<(), String> {
+    let root = snapshots_root()?;
+    let mut dirs: Vec<PathBuf> = match fs::read_dir(&root) {
+        Ok(rd) => rd
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.join("manifest.json").exists())
+            .collect(),
+        Err(_) => return Ok(()),
+    };
+    dirs.sort();
+    if dirs.len() > keep {
+        for old in &dirs[..dirs.len() - keep] {
+            if let Some(p) = protect {
+                if old.file_name().and_then(|n| n.to_str()) == Some(p) {
+                    continue;
+                }
+            }
+            let _ = fs::remove_dir_all(old);
+        }
+    }
+    Ok(())
+}
+
+fn list_snapshots() -> Result<Vec<BackupManifest>, String> {
+    let root = snapshots_root()?;
+    let mut out: Vec<BackupManifest> = Vec::new();
+    if let Ok(rd) = fs::read_dir(&root) {
+        for e in rd.flatten() {
+            if let Ok(s) = fs::read_to_string(e.path().join("manifest.json")) {
+                if let Ok(m) = serde_json::from_str::<BackupManifest>(&s) {
+                    out.push(m);
+                }
+            }
+        }
+    }
+    out.sort_by(|a, b| b.created_at_ms.cmp(&a.created_at_ms));
+    Ok(out)
+}
+
+/// Restore a snapshot: write the captured real bytes back to every live path,
+/// then re-create the symlink topology that existed when it was taken. Takes a
+/// safety snapshot of the CURRENT state first, so a restore is itself undoable.
+fn restore_snapshot(id: &str) -> Result<RestoreSummary, String> {
+    let id = safe_segment(id);
+    let root = snapshots_root()?.join(&id);
+    let manifest: BackupManifest = serde_json::from_str(
+        &fs::read_to_string(root.join("manifest.json")).map_err(|e| format!("Read manifest: {e}"))?,
+    )
+    .map_err(|e| format!("Parse manifest: {e}"))?;
+
+    // Take the pre-restore safety snapshot FIRST and HARD-FAIL if it can't be
+    // written — never run the destructive passes without a net. Protect THIS
+    // snapshot's id from the safety snapshot's prune so we can't evict the very
+    // data we're about to read back.
+    create_snapshot_protecting(
+        "before-restore",
+        &format!("Auto-backup before restoring: {}", manifest.label),
+        Some(&id),
+    )
+    .map_err(|e| format!("Aborting restore — pre-restore safety backup failed: {e}"))?;
+
+    let data_root = root.join("data");
+
+    // Pass 1 — write captured real bytes back to every live path, TRANSACTIONALLY:
+    // build the new content in a sibling temp dir first, then swap it into place,
+    // so a mid-copy failure can never leave a half-written or deleted live path.
+    let mut restored = 0u64;
+    let mut entries_with_data = 0u64;
+    for e in &manifest.entries {
+        let snap = data_root.join(&e.snapshot_rel);
+        if fs::symlink_metadata(&snap).is_err() {
+            continue; // nothing captured for this entry
+        }
+        entries_with_data += 1;
+        let live = PathBuf::from(&e.live_path);
+        if let Some(p) = live.parent() {
+            let _ = fs::create_dir_all(p);
+        }
+        let staging = sibling_temp(&live, "restore");
+        let _ = remove_path(&staging);
+        let mut f = 0u64;
+        let mut b = 0u64;
+        if let Err(err) = snapshot_copy(&snap, &staging, &mut f, &mut b, 0) {
+            let _ = remove_path(&staging);
+            return Err(format!("Restore aborted (no data lost) while staging {}: {err}", live.display()));
+        }
+        remove_path(&live)?;
+        fs::rename(&staging, &live)
+            .map_err(|e| format!("Restore swap {}: {e}", live.display()))?;
+        restored += 1;
+    }
+    // Fail loudly instead of reporting a phantom success: if the snapshot had
+    // captured data but none of it landed, the source was gone/corrupt.
+    if entries_with_data > 0 && restored == 0 {
+        return Err("Restore failed — the snapshot's data could not be read.".to_string());
+    }
+
+    // Pass 2 — re-create the symlink topology that existed at snapshot time. The
+    // hub data was restored as real bytes in pass 1, so the target now exists.
+    // Relink ATOMICALLY (build the link at a temp name, swap) so a failed link
+    // never strips the real pass-1 copy; count any unrelinkable spokes.
+    let mut relinked = 0u64;
+    let mut relink_skipped = 0u64;
+    for e in &manifest.entries {
+        if !e.was_symlink {
+            continue;
+        }
+        let Some(t) = &e.link_target else { continue };
+        let raw = PathBuf::from(t);
+        let live = PathBuf::from(&e.live_path);
+        let target_abs = if raw.is_absolute() {
+            raw.clone()
+        } else {
+            live.parent().map(|p| p.join(&raw)).unwrap_or_else(|| raw.clone())
+        };
+        // Hub missing → leave the real pass-1 directory in place (data preserved),
+        // and surface it as a skipped relink rather than silently dropping the link.
+        if fs::symlink_metadata(&target_abs).is_err() {
+            relink_skipped += 1;
+            continue;
+        }
+        let link_tmp = sibling_temp(&live, "link");
+        let _ = remove_path(&link_tmp);
+        if symlink_path(&raw, &link_tmp).is_ok()
+            && remove_path(&live).is_ok()
+            && fs::rename(&link_tmp, &live).is_ok()
+        {
+            relinked += 1;
+        } else {
+            let _ = remove_path(&link_tmp);
+            relink_skipped += 1;
+        }
+    }
+    Ok(RestoreSummary {
+        id: id.clone(),
+        created_at_ms: manifest.created_at_ms,
+        restored,
+        relinked,
+        relink_skipped,
+    })
+}
+
+/// A sibling temp path next to `live` (same parent → same filesystem → atomic
+/// rename). Used to stage restores/relinks so a failure never tears `live`.
+fn sibling_temp(live: &Path, tag: &str) -> PathBuf {
+    let name = live.file_name().and_then(|n| n.to_str()).unwrap_or("entry");
+    let parent = live.parent().map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
+    parent.join(format!(".claudex-{tag}-tmp-{name}"))
+}
+
 mod commands {
     use super::*;
+
+    /// Snapshot ALL managed content before a destructive mutation, then emit the
+    /// non-blocking toast event. Never blocks the user's action on a backup
+    /// failure — surfaces it as a warning event instead. The single safety hook
+    /// shared by Apply and the irreversible delete/import commands.
+    fn snapshot_before_mutation(app: &tauri::AppHandle, reason: &str, label: &str) {
+        use tauri::Emitter;
+        match super::create_snapshot(reason, label) {
+            Ok(m) => {
+                let _ = app.emit("claudex://backup", super::BackupSummary::from(&m));
+            }
+            Err(e) => {
+                let _ = app.emit("claudex://backup-failed", e);
+            }
+        }
+    }
 
     #[tauri::command]
     pub fn list_desktop_installs() -> Result<Vec<DesktopInstall>, String> {
@@ -8957,12 +9379,14 @@ mod commands {
     }
 
     #[tauri::command]
-    pub fn delete_content_path(path: String) -> Result<(), String> {
+    pub fn delete_content_path(app: tauri::AppHandle, path: String) -> Result<(), String> {
+        snapshot_before_mutation(&app, "before-delete", "Before deleting content");
         super::delete_content_path(path)
     }
 
     #[tauri::command]
-    pub fn import_memory_file(source: String, target: String) -> Result<(), String> {
+    pub fn import_memory_file(app: tauri::AppHandle, source: String, target: String) -> Result<(), String> {
+        snapshot_before_mutation(&app, "before-change", "Before importing a memory file");
         super::import_memory_file(source, target)
     }
 
@@ -8981,7 +9405,8 @@ mod commands {
     }
 
     #[tauri::command]
-    pub fn delete_mcp_server(config_path: String, server: String) -> Result<(), String> {
+    pub fn delete_mcp_server(app: tauri::AppHandle, config_path: String, server: String) -> Result<(), String> {
+        snapshot_before_mutation(&app, "before-delete", &format!("Before deleting MCP server · {server}"));
         super::delete_mcp_server(config_path, server)
     }
 
@@ -8996,10 +9421,12 @@ mod commands {
 
     #[tauri::command]
     pub fn delete_session_file(
+        app: tauri::AppHandle,
         install_id: String,
         session_id: String,
         world: String,
     ) -> Result<(), String> {
+        snapshot_before_mutation(&app, "before-delete", "Before deleting a session");
         super::delete_session_file(install_id, session_id, world)
     }
 
@@ -9030,10 +9457,39 @@ mod commands {
 
     #[tauri::command]
     pub fn apply_library_changes(
+        app: tauri::AppHandle,
         kind: String,
         changes: Vec<LibraryCellChange>,
     ) -> Result<CopySummary, String> {
+        // Data-safety: snapshot the current good state BEFORE this destructive
+        // Apply so it can be undone.
+        snapshot_before_mutation(&app, "before-apply", &format!("Before applying changes · {kind}"));
         super::apply_library_changes(kind, changes)
+    }
+
+    #[tauri::command]
+    pub fn list_backups() -> Result<Vec<BackupManifest>, String> {
+        super::list_snapshots()
+    }
+
+    #[tauri::command]
+    pub fn create_backup(
+        app: tauri::AppHandle,
+        reason: String,
+        label: String,
+    ) -> Result<BackupManifest, String> {
+        use tauri::Emitter;
+        let m = super::create_snapshot(&reason, &label)?;
+        let _ = app.emit("claudex://backup", super::BackupSummary::from(&m));
+        Ok(m)
+    }
+
+    #[tauri::command]
+    pub fn restore_backup(app: tauri::AppHandle, id: String) -> Result<RestoreSummary, String> {
+        use tauri::Emitter;
+        let r = super::restore_snapshot(&id)?;
+        let _ = app.emit("claudex://restored", r.clone());
+        Ok(r)
     }
 
     #[tauri::command]
@@ -9084,6 +9540,21 @@ pub fn run() {
                     let _ = window.set_traffic_lights_inset(17.0, 17.0);
                     let _ = window.make_transparent();
                 }
+            }
+            // Data-safety: take a baseline snapshot of all managed content on
+            // launch (in the background, off the UI thread — no tokio here), then
+            // toast the user non-intrusively via an event.
+            {
+                use tauri::Emitter;
+                let handle = app.handle().clone();
+                std::thread::spawn(move || match create_snapshot("startup", "Startup safety backup") {
+                    Ok(m) => {
+                        let _ = handle.emit("claudex://backup", BackupSummary::from(&m));
+                    }
+                    Err(e) => {
+                        let _ = handle.emit("claudex://backup-failed", e);
+                    }
+                });
             }
             Ok(())
         })
@@ -9162,7 +9633,10 @@ pub fn run() {
             commands::list_library_code_history,
             commands::list_library_cowork_sessions,
             commands::list_sessions_for_project,
-            commands::get_profile_stats
+            commands::get_profile_stats,
+            commands::list_backups,
+            commands::create_backup,
+            commands::restore_backup
         ])
         .build(tauri::generate_context!())
         .expect("error while building Claudex")
@@ -9189,6 +9663,98 @@ mod tests {
     /// e2e share test (which points HOME at a tempdir) can't race the
     /// home_dir()-reading tests under parallel `cargo test`.
     static ENV_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// END-TO-END: snapshot real content, simulate a destructive loss, then
+    /// restore — proving create_snapshot + restore_snapshot bring data back AND
+    /// faithfully rebuild a shared symlink topology (the exact disaster the
+    /// backup feature exists to undo).
+    #[test]
+    fn e2e_backup_then_restore_recovers_data_and_relinks() {
+        let _env = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let home = tempfile::tempdir().unwrap();
+        let prev_home = std::env::var_os("HOME");
+        let prev_xdg = std::env::var_os("XDG_CONFIG_HOME");
+        std::env::set_var("HOME", home.path());
+        std::env::set_var("XDG_CONFIG_HOME", home.path().join(".config"));
+
+        // Default ~/.claude with a real project session + a memory file.
+        let default_proj = home.path().join(".claude").join("projects").join("-Users-x-demo");
+        fs::create_dir_all(&default_proj).unwrap();
+        fs::write(default_proj.join("s1.jsonl"), "{\"hello\":\"world\"}\n").unwrap();
+        fs::write(home.path().join(".claude").join("CLAUDE.md"), "# original memory\n").unwrap();
+
+        // A second Claude Code account whose projects/ is SHARED (symlink) into
+        // the default — the spoke in a hub-and-spoke share.
+        let work = home.path().join(".claude-work");
+        fs::create_dir_all(&work).unwrap();
+        std::os::unix::fs::symlink(
+            home.path().join(".claude").join("projects"),
+            work.join("projects"),
+        )
+        .unwrap();
+
+        // 1) Snapshot everything.
+        let manifest = create_snapshot("manual", "test baseline").unwrap();
+        assert!(manifest.total_files >= 2, "captured the session + memory: {}", manifest.total_files);
+        let work_proj_entry = manifest
+            .entries
+            .iter()
+            .find(|e| e.live_path.ends_with(".claude-work/projects"))
+            .expect("work projects captured");
+        assert!(work_proj_entry.was_symlink, "work projects recorded as a symlink");
+        assert!(
+            work_proj_entry.link_target.as_deref().unwrap().ends_with(".claude/projects"),
+            "link target recorded"
+        );
+
+        // 2) Disaster: the share apply nukes the default project AND the spoke link.
+        fs::remove_dir_all(home.path().join(".claude").join("projects")).unwrap();
+        fs::remove_file(work.join("projects")).unwrap();
+        fs::write(home.path().join(".claude").join("CLAUDE.md"), "CORRUPTED\n").unwrap();
+        assert!(!default_proj.join("s1.jsonl").exists(), "session is gone before restore");
+
+        // 3) Restore the baseline.
+        let summary = restore_snapshot(&manifest.id).unwrap();
+        assert!(summary.restored >= 2, "restored entries: {}", summary.restored);
+        assert!(summary.relinked >= 1, "relinked the spoke: {}", summary.relinked);
+
+        // Data is back, memory is un-corrupted.
+        assert!(default_proj.join("s1.jsonl").exists(), "session restored");
+        assert_eq!(
+            fs::read_to_string(default_proj.join("s1.jsonl")).unwrap(),
+            "{\"hello\":\"world\"}\n"
+        );
+        assert_eq!(
+            fs::read_to_string(home.path().join(".claude").join("CLAUDE.md")).unwrap(),
+            "# original memory\n"
+        );
+        // The spoke is a symlink again, resolving to the restored hub data.
+        let relinked = work.join("projects");
+        assert!(
+            fs::symlink_metadata(&relinked).unwrap().file_type().is_symlink(),
+            "work projects is a symlink again"
+        );
+        assert!(
+            relinked.join("-Users-x-demo").join("s1.jsonl").exists(),
+            "spoke resolves to restored hub data"
+        );
+
+        // A safety snapshot of the pre-restore (corrupted) state was also taken.
+        let snaps = list_snapshots().unwrap();
+        assert!(
+            snaps.iter().any(|m| m.reason == "before-restore"),
+            "restore took its own safety snapshot"
+        );
+
+        match prev_home {
+            Some(v) => std::env::set_var("HOME", v),
+            None => std::env::remove_var("HOME"),
+        }
+        match prev_xdg {
+            Some(v) => std::env::set_var("XDG_CONFIG_HOME", v),
+            None => std::env::remove_var("XDG_CONFIG_HOME"),
+        }
+    }
 
     #[test]
     fn sanitize_profile_name_matches_cli_rules() {
@@ -10286,6 +10852,59 @@ mod tests {
 
         // Idempotent re-share is a no-op (already linked).
         assert!(!share_claude_sessions(src.path(), &target_config).unwrap());
+    }
+
+    /// REGRESSION: restoring an OLD snapshot must NOT be evicted by the prune
+    /// that runs inside the before-restore safety snapshot, and a no-op restore
+    /// must fail loudly rather than report a phantom success. Creates >15
+    /// snapshots, then restores the very first — asserting its data comes back
+    /// and its dir survived.
+    #[test]
+    fn e2e_restore_oldest_snapshot_survives_prune() {
+        let _env = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let home = tempfile::tempdir().unwrap();
+        let prev_home = std::env::var_os("HOME");
+        let prev_xdg = std::env::var_os("XDG_CONFIG_HOME");
+        std::env::set_var("HOME", home.path());
+        std::env::set_var("XDG_CONFIG_HOME", home.path().join(".config"));
+
+        let proj = home.path().join(".claude").join("projects").join("-Users-x-demo");
+        fs::create_dir_all(&proj).unwrap();
+        fs::write(proj.join("s1.jsonl"), "ORIGINAL\n").unwrap();
+
+        // The snapshot we'll restore later — the OLDEST of a full keep=15 window.
+        let oldest = create_snapshot("manual", "oldest").unwrap();
+        // Fill the window exactly: oldest + 14 = 15 kept (oldest sits on the
+        // boundary, so the before-restore snapshot's prune WOULD evict it
+        // without the protect fix).
+        for i in 0..14 {
+            create_snapshot("manual", &format!("filler {i}")).unwrap();
+        }
+
+        // Disaster wipes the live session.
+        fs::remove_dir_all(home.path().join(".claude").join("projects")).unwrap();
+
+        // Restoring the oldest must still work — its dir is protected from the
+        // prune that runs inside the before-restore safety snapshot.
+        let summary = restore_snapshot(&oldest.id).unwrap();
+        assert!(summary.restored >= 1, "restored from the oldest snapshot: {}", summary.restored);
+        assert_eq!(fs::read_to_string(proj.join("s1.jsonl")).unwrap(), "ORIGINAL\n");
+        assert!(
+            snapshots_root().unwrap().join(&oldest.id).join("manifest.json").exists(),
+            "the restored snapshot survived the prune"
+        );
+        // Disk stays bounded — prune keeps the cap (plus the protected one).
+        let kept = list_snapshots().unwrap();
+        assert!(kept.len() <= 17, "prune still bounds disk: {} snapshots", kept.len());
+
+        match prev_home {
+            Some(v) => std::env::set_var("HOME", v),
+            None => std::env::remove_var("HOME"),
+        }
+        match prev_xdg {
+            Some(v) => std::env::set_var("XDG_CONFIG_HOME", v),
+            None => std::env::remove_var("XDG_CONFIG_HOME"),
+        }
     }
 
     /// END-TO-END: the EXACT path the GUI runs — toggle whole-sessions share onto

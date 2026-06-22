@@ -35,6 +35,7 @@ Two profile worlds — **Claude** (Desktop + Code) and **Codex** — each tinted
 - **Cross-tool import & export** — bring a Codex session into Claude Code, *or* export a Claude Code session into Codex, as a brand-new resumable conversation. Import, not sync — see [How it works](#how-it-works).
 - **Live status, both tools** — the running profile gets a pulsing dot and a `LIVE` pill; the live badge now auto-refreshes for Codex as well as Claude. Launch any profile with ▶.
 - **Safe by design** — delete lives in the profile's detail panel (never an easy-to-misclick row button); erasing real data is an explicit opt-in, guarded so it can never escape the profile's own directory.
+- **Automatic local backups + restore** — sharing is destructive, so before every **Apply** (and once on launch, and before any delete) Claudex snapshots *all* managed content — sessions, skills, memory, MCP, preferences across every profile — to a timestamped local copy, with a non-blocking "backed up for safety" notice. The **Backups** panel (shield icon, top bar) lists every snapshot and rolls everything back to any point in one click, faithfully rebuilding your share links; a restore snapshots the current state first, so it's reversible too. The last 15 are kept.
 - **Profile detail** *(Claude)* — today's tokens, rolling 5h / 7d session counts, pace vs your own baseline, account identities, storage breakdown, sharing graph.
 - **CLI included** — `add`, `list`, `status`, `convert`, `repair`, `remove`.
 

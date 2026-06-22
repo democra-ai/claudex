@@ -1,6 +1,7 @@
 import { useCallback, useState } from "react";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { Toolbar } from "@/components/Toolbar";
+import { BackupsPanel } from "@/components/BackupsPanel";
 import ContentLibraryPage from "@/components/library/ContentLibraryPage";
 
 /**
@@ -18,6 +19,7 @@ export default function App() {
   // ContentLibraryPage. We bridge with a key-bump to remount cleanly.
   const [refreshKey, setRefreshKey] = useState(0);
   const handleRefresh = useCallback(() => setRefreshKey((k) => k + 1), []);
+  const [backupsOpen, setBackupsOpen] = useState(false);
 
   return (
     <TooltipProvider delayDuration={200}>
@@ -26,9 +28,18 @@ export default function App() {
           flattening the whole canvas to one color. Panels (the bg-card/30
           sidebar, the floating white matrix card) sit over the gradient. */}
       <div className="flex h-full flex-col">
-        <Toolbar onRefresh={handleRefresh} busy={false} />
+        <Toolbar
+          onRefresh={handleRefresh}
+          busy={false}
+          onOpenBackups={() => setBackupsOpen(true)}
+        />
         <ContentLibraryPage key={refreshKey} />
       </div>
+      <BackupsPanel
+        open={backupsOpen}
+        onClose={() => setBackupsOpen(false)}
+        onRestored={handleRefresh}
+      />
     </TooltipProvider>
   );
 }

@@ -4,7 +4,9 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
+import { listen } from "@tauri-apps/api/event";
 import { api, isTauri } from "@/lib/api";
+import type { BackupEvent, RestoreSummary } from "@/lib/api";
 import { useToasts } from "@/hooks/useToast";
 import type {
   CellState,
@@ -743,6 +745,31 @@ export default function ContentLibraryPage() {
     loadKind(activeKind);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [installs.length]);
+
+  // Non-blocking data-safety toasts: the backend snapshots all managed content
+  // at startup and before every Apply, then emits these events. Restore also
+  // emits one. We never block the user — just reassure them their data is safe.
+  useEffect(() => {
+    if (!isTauri()) return;
+    const at = (ms: number) =>
+      new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+    const pending = [
+      listen<BackupEvent>("claudex://backup", (e) =>
+        push(`Backed up locally for safety · ${at(e.payload.createdAtMs)}`, "info"),
+      ),
+      listen<string>("claudex://backup-failed", (e) =>
+        push(`Local backup failed — ${e.payload}`, "error"),
+      ),
+      listen<RestoreSummary>("claudex://restored", (e) => {
+        const s = e.payload;
+        const tail = s.relinkSkipped > 0 ? ` · ${s.relinkSkipped} share(s) couldn't re-link (target missing)` : "";
+        push(`Restored ${s.restored} item(s) from a snapshot${tail}`, s.relinkSkipped > 0 ? "info" : "success");
+      }),
+    ];
+    return () => {
+      pending.forEach((p) => p.then((un) => un()).catch(() => undefined));
+    };
+  }, [push]);
 
   // Eagerly load counts for the other kinds in the background so KindNav
   // shows N/M for everything, not just the active tab.
