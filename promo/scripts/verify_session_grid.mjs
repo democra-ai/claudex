@@ -42,14 +42,14 @@ const start = async () => {
     const ROWS = {
       list_codex_sessions_library: [
         { id: "__all_sessions__", label: "All Codex sessions", description: "Toggle to symlink the whole ~/.codex/sessions dir.", group: "Sessions", interactive: true, cells: rowCells(["independent", "independent"]) },
-        { id: "/Users/tao.shen/democra-ai", label: "democra-ai", description: "~/democra-ai", group: "Projects", interactive: false, cells: rowCells(["independent", "absent"]) },
+        { id: "~/code/demo", label: "acme", description: "~/acme", group: "Projects", interactive: false, cells: rowCells(["independent", "absent"]) },
       ],
     };
     const sCell = (id, name, state, actionable = true) => ({ install_id: id, install_name: name, state, actionable });
     const SHARE_GRID = [
-      { session_id: "s1", title: "Redesign the share matrix interaction", cwd: "/Users/tao.shen/democra-ai", model: "gpt-5-codex", last_activity_ms: 1, active: false, cells: [sCell("default", "Default", "independent"), sCell("profile:judy", "judy", "absent")] },
-      { session_id: "s2", title: "Fix Codex live-state detection", cwd: "/Users/tao.shen/democra-ai", model: "gpt-5-codex", last_activity_ms: 1, active: false, cells: [sCell("default", "Default", "shared"), sCell("profile:judy", "judy", "shared")] },
-      { session_id: "s3", title: "Per-session sharing (in progress now)", cwd: "/Users/tao.shen/democra-ai", model: "gpt-5-codex", last_activity_ms: 9e15, active: true, cells: [sCell("default", "Default", "independent"), sCell("profile:judy", "judy", "absent")] },
+      { session_id: "s1", title: "Redesign the share matrix interaction", cwd: "~/code/demo", model: "gpt-5-codex", last_activity_ms: 1, active: false, cells: [sCell("default", "Default", "independent"), sCell("profile:judy", "judy", "absent")] },
+      { session_id: "s2", title: "Fix Codex live-state detection", cwd: "~/code/demo", model: "gpt-5-codex", last_activity_ms: 1, active: false, cells: [sCell("default", "Default", "shared"), sCell("profile:judy", "judy", "shared")] },
+      { session_id: "s3", title: "Per-session sharing (in progress now)", cwd: "~/code/demo", model: "gpt-5-codex", last_activity_ms: 9e15, active: true, cells: [sCell("default", "Default", "independent"), sCell("profile:judy", "judy", "absent")] },
     ];
     window.__TAURI_INTERNALS__ = {
       invoke: async (cmd) => {
@@ -76,7 +76,7 @@ const start = async () => {
   const click = async (loc) => { try { await loc.first().click({ timeout: 4000 }); await page.waitForTimeout(500); return true; } catch (e) { console.log("miss:", e.message.split("\n")[0]); return false; } };
 
   // Codex tab → expand the project row via its chevron (all-sessions chevron is
-  // index 0, the democra-ai project row is index 1).
+  // index 0, the acme project row is index 1).
   await click(page.getByRole("button", { name: "Codex" }));
   await page.waitForTimeout(400);
   await click(page.getByRole("button", { name: "Toggle sessions" }).nth(1));

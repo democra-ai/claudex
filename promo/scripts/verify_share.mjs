@@ -54,9 +54,9 @@ const start = async () => {
     const rowCells = (states) => cols.map((c, i) => cell(c[0], c[1], c[2], states[i]));
     const ROWS = {
       list_claude_sessions_library: [
-        { id: "p1", label: "claude-multiprofile", description: "42 sessions · active 2h ago", group: "PROJECTS", interactive: true, cells: rowCells(["independent", "shared", "shared"]) },
-        { id: "p2", label: "fde-match", description: "8 sessions · yesterday", group: "PROJECTS", interactive: true, cells: rowCells(["shared", "shared", "shared"]) },
-        { id: "p3", label: "agent_skills_threat", description: "15 sessions · 3d ago", group: "PROJECTS", interactive: true, cells: rowCells(["independent", "independent", "absent"]) },
+        { id: "p1", label: "acme-storefront", description: "42 sessions · active 2h ago", group: "PROJECTS", interactive: true, cells: rowCells(["independent", "shared", "shared"]) },
+        { id: "p2", label: "billing-service", description: "8 sessions · yesterday", group: "PROJECTS", interactive: true, cells: rowCells(["shared", "shared", "shared"]) },
+        { id: "p3", label: "mobile-app", description: "15 sessions · 3d ago", group: "PROJECTS", interactive: true, cells: rowCells(["independent", "independent", "absent"]) },
       ],
     };
     window.__TAURI_INTERNALS__ = {

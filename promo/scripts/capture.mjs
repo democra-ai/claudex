@@ -78,15 +78,15 @@ const start = async () => {
     const ROWS = {
       // Claude tab — Code Sessions (orange)
       list_claude_sessions_library: [
-        { id: "p1", label: "claude-multiprofile", description: "42 sessions · active 2h ago", group: "PROJECTS", interactive: true, cells: rowCells(claudeCols, ["independent", "shared", "shared"]) },
-        { id: "p2", label: "fde-match", description: "8 sessions · yesterday", group: "PROJECTS", interactive: true, cells: rowCells(claudeCols, ["independent", "independent", "absent"]) },
-        { id: "p3", label: "agent_skills_threat", description: "15 sessions · 3d ago", group: "PROJECTS", interactive: true, cells: rowCells(claudeCols, ["shared", "shared", "absent"]) },
-        { id: "p4", label: "air-quiz", description: "6 sessions · last week", group: "PROJECTS", interactive: true, cells: rowCells(claudeCols, ["absent", "independent", "independent"]) },
+        { id: "p1", label: "acme-storefront", description: "42 sessions · active 2h ago", group: "PROJECTS", interactive: true, cells: rowCells(claudeCols, ["independent", "shared", "shared"]) },
+        { id: "p2", label: "billing-service", description: "8 sessions · yesterday", group: "PROJECTS", interactive: true, cells: rowCells(claudeCols, ["independent", "independent", "absent"]) },
+        { id: "p3", label: "mobile-app", description: "15 sessions · 3d ago", group: "PROJECTS", interactive: true, cells: rowCells(claudeCols, ["shared", "shared", "absent"]) },
+        { id: "p4", label: "blog-cms", description: "6 sessions · last week", group: "PROJECTS", interactive: true, cells: rowCells(claudeCols, ["absent", "independent", "independent"]) },
       ],
       // Claude tab — Memory (CLAUDE.md)
       list_claude_memory_library: [
         { id: "m1", label: "Global · CLAUDE.md", description: "~/.claude/CLAUDE.md · 1.2 KB", group: "MEMORY", interactive: true, cells: [cell("default", "Default", "~/.claude/CLAUDE.md", "independent"), cell("work", "Work", "~/.claude-work/CLAUDE.md", "shared"), cell("personal", "Personal", "~/.claude-personal/CLAUDE.md", "shared")] },
-        { id: "m2", label: "democra-ai/CLAUDE.md", description: "project memory · 3.4 KB", group: "MEMORY", interactive: true, cells: [cell("default", "Default", "~/.claude/CLAUDE.md", "independent"), cell("work", "Work", "~/.claude-work/CLAUDE.md", "absent"), cell("personal", "Personal", "~/.claude-personal/CLAUDE.md", "absent")] },
+        { id: "m2", label: "acme-storefront/CLAUDE.md", description: "project memory · 3.4 KB", group: "MEMORY", interactive: true, cells: [cell("default", "Default", "~/.claude/CLAUDE.md", "independent"), cell("work", "Work", "~/.claude-work/CLAUDE.md", "absent"), cell("personal", "Personal", "~/.claude-personal/CLAUDE.md", "absent")] },
       ],
       // Claude tab — Skills (within Claude)
       list_claude_skills_library: [
@@ -95,9 +95,9 @@ const start = async () => {
       ],
       // Codex tab — sessions (indigo)
       list_codex_sessions_library: [
-        { id: "c1", label: "claudex", description: "12 sessions · active now", group: "PROJECTS", interactive: true, cells: rowCells(codexCols, ["independent", "shared"]) },
-        { id: "c2", label: "candy-shop", description: "5 sessions · 2d ago", group: "PROJECTS", interactive: true, cells: rowCells(codexCols, ["shared", "shared"]) },
-        { id: "c3", label: "openfde", description: "3 sessions · last week", group: "PROJECTS", interactive: true, cells: rowCells(codexCols, ["independent", "absent"]) },
+        { id: "c1", label: "weather-api", description: "12 sessions · active now", group: "PROJECTS", interactive: true, cells: rowCells(codexCols, ["independent", "shared"]) },
+        { id: "c2", label: "todo-app", description: "5 sessions · 2d ago", group: "PROJECTS", interactive: true, cells: rowCells(codexCols, ["shared", "shared"]) },
+        { id: "c3", label: "image-resizer", description: "3 sessions · last week", group: "PROJECTS", interactive: true, cells: rowCells(codexCols, ["independent", "absent"]) },
       ],
       list_codex_skills_library: [
         { id: "pdf", label: "pdf", description: "shared from Claude", group: "SKILLS", interactive: true, cells: rowCells(codexCols, ["shared", "shared"]) },
@@ -140,13 +140,13 @@ const start = async () => {
 
     const CLAUDE_MD = `# Working agreements
 
-- The user is Yufan — researcher, ships products not reports.
-- Push democra-ai sub-repos after each milestone; don't let work sit local.
-- Prefer professional skills (data-visualization) over hand-rolled SVG.
-- When given 调研 + "make a website", build the real product it implies.
+- Prefer TypeScript; keep functions small and pure.
+- Write a test for every new endpoint before shipping.
+- Run lint + typecheck before committing.
+- Conventional commits; one logical change per PR.
 
 ## Stack
-Tauri 2 (Rust) + React + Vite + Tailwind + shadcn/ui.
+Next.js + TypeScript + Tailwind + Postgres.
 `;
     const MCP_JSON = `{
   "command": "npx",
@@ -161,7 +161,7 @@ Tauri 2 (Rust) + React + Vite + Tailwind + shadcn/ui.
       tokens_today: 1840000, tokens_today_date: "2026-06-17", code_sessions_last_5h: 4, code_sessions_last_24h: 11, code_sessions_last_7d: 63, code_sessions_last_30d: 240,
       code_sessions_per_day_baseline: 9, code_sessions_today: 7, top_model_last_7d: "opus-4-8", device_id: "MacBook", ssh_remote_count: 0, disk_bytes: 1280000000,
       code_panel_bytes: null, cowork_agent_bytes: null, created_at_ms: 0, last_activity_ms: 0, code_session_count: 240, code_total_bytes: 1280000000,
-      code_recent_cwds: ["~/democra-ai/claude-multiprofile"], cowork_session_count: 0, extension_count: 3, mcp_server_count: 5, cowork_skill_count: 4, link_group: "a1b2c3d4", shared_with: ["work", "personal"],
+      code_recent_cwds: ["~/code/acme-storefront"], cowork_session_count: 0, extension_count: 3, mcp_server_count: 5, cowork_skill_count: 4, link_group: "a1b2c3d4", shared_with: ["work", "personal"],
     });
 
     window.__TAURI_INTERNALS__ = {
@@ -176,11 +176,11 @@ Tauri 2 (Rust) + React + Vite + Tailwind + shadcn/ui.
         if (cmd === "read_mcp_server") return MCP_JSON;
         if (cmd === "list_claude_sessions_for_project" || cmd === "list_codex_sessions_for_project" || cmd === "list_sessions_for_project")
           return [
-            { session_id: "s1", title: "Redesign per-tab theming + green glow", cwd: "~/democra-ai/claude-multiprofile", process_name: "claude", model: "opus-4-8", created_at_ms: 0, last_activity_ms: 0, account_name: "work", email_address: null },
-            { session_id: "s2", title: "Add MCP keyed view/edit/delete", cwd: "~/democra-ai/claude-multiprofile", process_name: "claude", model: "opus-4-8", created_at_ms: 0, last_activity_ms: 0, account_name: "work", email_address: null },
-            { session_id: "s3", title: "Fine-grained per-session sharing", cwd: "~/democra-ai/claude-multiprofile", process_name: "claude", model: "sonnet-4-6", created_at_ms: 0, last_activity_ms: 0, account_name: "personal", email_address: null },
+            { session_id: "s1", title: "Add user login flow", cwd: "~/code/acme-storefront", process_name: "claude", model: "opus-4-8", created_at_ms: 0, last_activity_ms: 0, account_name: "work", email_address: null },
+            { session_id: "s2", title: "Fix checkout total rounding", cwd: "~/code/acme-storefront", process_name: "claude", model: "opus-4-8", created_at_ms: 0, last_activity_ms: 0, account_name: "work", email_address: null },
+            { session_id: "s3", title: "Refactor the API client", cwd: "~/code/acme-storefront", process_name: "claude", model: "sonnet-4-6", created_at_ms: 0, last_activity_ms: 0, account_name: "personal", email_address: null },
           ];
-        if (cmd === "get_session_transcript") return "user: redesign the share interaction\nassistant: done — green glow now marks shared groups...";
+        if (cmd === "get_session_transcript") return "user: add a login form with email + password\nassistant: done — added the form, validation, and a session cookie...";
         return null;
       },
       transformCallback: (cb) => { const id = Math.floor(Math.random() * 1e9); window["_cb" + id] = cb; return id; },
@@ -204,7 +204,7 @@ Tauri 2 (Rust) + React + Vite + Tailwind + shadcn/ui.
   await shot("01-claude-sessions");
 
   // Claude → Sessions row detail (manage: view / delete / import sessions)
-  await click(page.getByText("claude-multiprofile"), "sessions row");
+  await click(page.getByText("acme-storefront"), "sessions row");
   await page.waitForTimeout(500);
   await shot("06-claude-sessions-detail");
   await shotSheet("06b-sessions-sheet");
