@@ -21,7 +21,11 @@ export default function App() {
 
   return (
     <TooltipProvider delayDuration={200}>
-      <div className="flex h-full flex-col bg-background">
+      {/* No bg here — the body's diagonal cream→blue gradient (index.css) must
+          read through. A solid `bg-background` used to sit here and cover it,
+          flattening the whole canvas to one color. Panels (the bg-card/30
+          sidebar, the floating white matrix card) sit over the gradient. */}
+      <div className="flex h-full flex-col">
         <Toolbar onRefresh={handleRefresh} busy={false} />
         <ContentLibraryPage key={refreshKey} />
       </div>
