@@ -1,0 +1,14 @@
+import { chromium } from "playwright";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+const HERE = path.dirname(fileURLToPath(import.meta.url));
+const html = path.resolve(HERE, "../../docs/assets/_red-poster.html");
+const out = path.resolve(HERE, "../../docs/assets/red-poster.png");
+const browser = await chromium.launch({ channel: "chrome" });
+const page = await browser.newPage({ viewport: { width: 1080, height: 1440 }, deviceScaleFactor: 2 });
+await page.goto("file://" + html, { waitUntil: "networkidle", timeout: 60000 });
+await page.evaluate(() => document.fonts.ready);
+await page.waitForTimeout(900);
+await page.screenshot({ path: out });
+await browser.close();
+console.log("rendered →", out);
