@@ -144,9 +144,20 @@ const start = async () => {
 - Write a test for every new endpoint before shipping.
 - Run lint + typecheck before committing.
 - Conventional commits; one logical change per PR.
+- Never log secrets; read them from the environment.
+- Keep PRs under ~400 lines; split larger work.
 
 ## Stack
-Next.js + TypeScript + Tailwind + Postgres.
+- Web: Next.js + TypeScript + Tailwind.
+- Data: Postgres via Prisma; migrations in /db.
+- Auth: session cookies, httpOnly + SameSite=Lax.
+- Deploy: Vercel preview per PR, prod on main.
+
+## Conventions
+- Components in PascalCase; hooks prefixed with use.
+- Colocate tests as *.test.ts next to the source.
+- API routes return typed JSON; no any at boundaries.
+- Format with Prettier on save; no manual alignment.
 `;
     const MCP_JSON = `{
   "command": "npx",
