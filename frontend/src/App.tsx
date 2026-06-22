@@ -2,6 +2,7 @@ import { useCallback, useState } from "react";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { Toolbar } from "@/components/Toolbar";
 import { BackupsPanel } from "@/components/BackupsPanel";
+import { UpdateBanner } from "@/components/UpdateBanner";
 import ContentLibraryPage from "@/components/library/ContentLibraryPage";
 
 /**
@@ -33,6 +34,7 @@ export default function App() {
           busy={false}
           onOpenBackups={() => setBackupsOpen(true)}
         />
+        <UpdateBanner />
         <ContentLibraryPage key={refreshKey} />
       </div>
       <BackupsPanel

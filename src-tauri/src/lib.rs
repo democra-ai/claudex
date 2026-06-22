@@ -9520,6 +9520,8 @@ mod commands {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_decorum::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .setup(|app| {
             // The canonical Tauri 2 way to get a single-row overlay title
             // bar with traffic lights inset to match a custom toolbar.

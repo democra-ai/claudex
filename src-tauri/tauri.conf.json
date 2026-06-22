@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Claudex",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "identifier": "com.claudex.app",
   "build": {
     "beforeDevCommand": "npm --prefix frontend run dev",
@@ -30,6 +30,7 @@
   "bundle": {
     "active": true,
     "targets": ["app", "dmg"],
+    "createUpdaterArtifacts": true,
     "icon": ["icons/icon.icns"],
     "category": "DeveloperTool",
     "shortDescription": "Manage multiple Claude Desktop profiles, side by side.",
@@ -37,6 +38,14 @@
     "copyright": "© 2026 Claudex contributors",
     "macOS": {
       "minimumSystemVersion": "11.0"
+    }
+  },
+  "plugins": {
+    "updater": {
+      "endpoints": [
+        "https://github.com/democra-ai/claudex/releases/latest/download/latest.json"
+      ],
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEIxMjJGNEMzQ0ExQzcyMzQKUldRMGNoekt3L1Fpc1RQYU5pNGVObjlXNDMzWlp5Z285cFEvRHdqN1UzcUNQOUJ2cnlsMkhSMlAK"
     }
   }
 }
