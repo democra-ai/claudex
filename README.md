@@ -19,29 +19,6 @@
   <img src="docs/assets/hero.png" alt="Claudex screenshot" width="880">
 </p>
 
->[!WARNING]
-> **Unofficial · Personal Hobby Project · Use Entirely at Your Own Risk**
->
-> **Claudex** is an unofficial, third-party tool for running multiple Claude and Codex accounts side by side. It is a **personal learning and hobby project** — built for fun and experimentation, nothing more. It is **incomplete and not production-ready**: features may be broken, unstable, or change without notice.
->
-> The author accepts **NO RESPONSIBILITY and NO LIABILITY** for any consequences of using this software, including but not limited to:
-> - **Local data loss or corruption** — your accounts, sessions, settings, or other local files may be lost, overwritten, or damaged.
-> - **Account suspension or bans** — running multiple accounts may violate the Terms of Service of Anthropic or OpenAI and could get your accounts rate-limited, suspended, or permanently banned.
->
-> **Use it entirely at your own risk. Back up your data before using it.** This project is **NOT affiliated with, authorized by, or endorsed by Anthropic or OpenAI.** All trademarks belong to their respective owners.
->
-> ---
->
-> **非官方 · 个人业余项目 · 使用风险完全自负**
->
-> **Claudex** 是一个非官方的第三方工具，用于同时并行运行多个 Claude 和 Codex 账号。它纯属**个人学习和娱乐**用途的项目——只为兴趣和实验而做，仅此而已。本产品**并不完善，未达到生产可用标准**：功能可能存在缺陷、不稳定，或在未经通知的情况下随时变动。
->
-> 对于使用本软件所造成的任何后果，作者**概不负责，亦不承担任何法律责任**，包括但不限于：
-> - **本地数据丢失或损坏**——您的账号、会话、配置或其他本地文件可能丢失、被覆盖或损毁。
-> - **账号被封**——同时运行多个账号可能违反 Anthropic 或 OpenAI 的服务条款，可能导致您的账号被限速、封禁或永久封号。
->
-> **请完全自担风险使用本软件，并在使用前务必备份您的数据。** 本项目**与 Anthropic 和 OpenAI 没有任何隶属关系，未获其授权或认可。** 所有商标归各自所有者所有。
-
 Two profile worlds — **Claude** (Desktop + Code) and **Codex** — each tinted with its own accent (Claude copper, Codex indigo), each with its own isolated logins, chats, settings, MCP, memory, and skills. Open several windows at once, each on a different account. Then share what you want between accounts — within a tool or across the Claude↔Codex boundary — from one matrix: skills, MCP servers, the agent memory file, and whole session histories — down to an individual session. And import any session from one tool into the other as a fresh, resumable conversation.
 
 > **Unofficial community tool.** Profiles are isolated with public flags + env vars: Claude Desktop (Electron) via `--user-data-dir`, Claude Code via `CLAUDE_CONFIG_DIR`, and the Codex desktop app (Chromium-based) via `--user-data-dir` **plus** its own `CODEX_HOME` — because Codex keeps its OAuth token in the agent home, not the browser profile, so the web dir alone wouldn't separate accounts. Not endorsed by Anthropic or OpenAI.
@@ -178,6 +155,19 @@ Reads & writes only inside the per-profile data folders, the launcher `.app` bun
 - **[claude-multiprofile](https://github.com/jmdarre-v/claude-multiprofile)** (upstream, by jmdarre-v) — the CLI wizard, registry, macOS launcher generation, and shell-alias handling are derived from this MIT-licensed project. Preserved here under the same terms.
 - **[tauri-plugin-decorum](https://github.com/clearlysid/tauri-plugin-decorum)** (by clearlysid) — the NSWindow Objective-C bindings that give us a proper single-row title bar with inset traffic lights.
 - **Anthropic** — for Claude Desktop and Claude Code. Native multi-account is in their open feature requests ([Desktop](https://github.com/anthropics/claude-code/issues/32783), [Code](https://github.com/anthropics/claude-code/issues/18435)); this tool fills the gap until then.
+
+## Disclaimer
+
+> [!WARNING]
+> **Unofficial · Personal Hobby Project · Use Entirely at Your Own Risk**
+>
+> **Claudex** is an unofficial, third-party tool for running multiple Claude and Codex accounts side by side. It is a **personal learning and hobby project** — built for fun and experimentation, nothing more. It is **incomplete and not production-ready**: features may be broken, unstable, or change without notice.
+>
+> The author accepts **NO RESPONSIBILITY and NO LIABILITY** for any consequences of using this software, including but not limited to:
+> - **Local data loss or corruption** — your accounts, sessions, settings, or other local files may be lost, overwritten, or damaged.
+> - **Account suspension or bans** — running multiple accounts may violate the Terms of Service of Anthropic or OpenAI and could get your accounts rate-limited, suspended, or permanently banned.
+>
+> **Use it entirely at your own risk. Back up your data before using it.** This project is **NOT affiliated with, authorized by, or endorsed by Anthropic or OpenAI.** All trademarks belong to their respective owners.
 
 ## License
 
