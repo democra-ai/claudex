@@ -274,3 +274,15 @@
     animation: sheetSlideIn 240ms ease-out;
   }
 }
+
+/* tauri-plugin-decorum injects a fixed, full-width, 32px-tall, z-index:100
+   overlay (div[data-tauri-decorum-tb]) as its window-drag region. It sits ON TOP
+   of our React toolbar and was swallowing every click on the toolbar buttons
+   (theme · Backups · Refresh), which live almost entirely within that top 32px.
+   Let pointer events pass through to the buttons — our own
+   <header data-tauri-drag-region> already provides the draggable area, so the
+   window still drags from the empty title-bar regions. The native macOS traffic
+   lights are unaffected (they're an NSWindow overlay, not this DOM node). */
+[data-tauri-decorum-tb] {
+  pointer-events: none !important;
+}
